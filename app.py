@@ -63,12 +63,10 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, conversion_input, add_input, total_target_count):
-        # 구매전환 키워드(유입) + 추가 키워드(고정) 처리
         conversion_keywords = [w.strip() for w in conversion_input.split() if len(w.strip()) > 0]
         add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
         fixed_keywords = conversion_keywords + add_keywords
         
-        # [1] 상품명 분석
         name_terms = []
         for name in self.df['상품명']:
             name_terms.extend(self.split_base_terms(name))
@@ -83,7 +81,6 @@ class SEOManager:
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
-        # [2] 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -91,7 +88,6 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        # [3] 태그 분석
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
@@ -136,7 +132,6 @@ st.sidebar.header("📁 Step 1. 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
 st.sidebar.header("🎯 Step 2. 전략 키워드 설정")
-# ★ [수정 완료] 명칭 변경: 유입 키워드 -> 구매전환 키워드
 conversion_input = st.sidebar.text_input("구매전환 키워드", placeholder="예: 맛있는 속편한")
 add_input = st.sidebar.text_input("추가할 키워드 (고정 배치)", placeholder="예: 국내산 당일발송")
 exclude_input = st.sidebar.text_input("제외할 키워드 (분석 제외)", placeholder="예: 브랜드명")
@@ -191,15 +186,16 @@ if uploaded_file:
     st.markdown("---")
 
     # 섹션 3: 태그
-    st.header("🔍 3. 확장 검색 태그")
+    st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
     col5, col6 = st.columns([2, 1])
     with col5:
         st.subheader("✅ 최적화 태그 10선")
         tag_display = ", ".join([f"#{t[0]}" for t in tags])
         st.warning(tag_display)
     with col6:
+        # ★ [수정 완료] 명칭 변경: 인식 횟수 -> 사용 빈도수
         st.subheader("📊 태그 인식 데이터")
-        tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
+        tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
         tag_df.index = tag_df.index + 1
         st.table(tag_df)
 else:
