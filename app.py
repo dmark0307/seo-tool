@@ -61,7 +61,7 @@ class SEOManager:
 
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
-    def run_analysis(self, manual_input):
+    def run_analysis(self, manual_input, total_target_count):
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
         
         # [1] 상품명 분석
@@ -75,7 +75,8 @@ class SEOManager:
             if not any(manual_w in w or w in manual_w for manual_w in manual_keywords):
                 auto_candidates.append((w, c))
         
-        remain_count = max(0, 12 - len(manual_keywords))
+        # [수정] 사용자가 설정한 총 키워드 수에서 수동 키워드 수를 뺌
+        remain_count = max(0, total_target_count - len(manual_keywords))
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
@@ -87,7 +88,7 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        # [3] 태그 분석 - 중복 배제 및 조합 확장 로직 대폭 강화
+        # [3] 태그 분석
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
@@ -97,17 +98,13 @@ class SEOManager:
         tag_freq = Counter(tag_raw_list).most_common(150)
         current_title_words = manual_keywords + [p[0] for p in readable_auto_pairs]
         
-        # 기초 필터링 (수치 제외, 제목 중복 제외)
         valid_candidates = []
         for t, c in tag_freq:
             if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
                 valid_candidates.append((t, c))
 
-        # --- 중복 배제 및 조합 확장 알고리즘 ---
         final_tags = []
         used_roots = set()
-        
-        # 유사 의미 그룹핑용 키워드 (클러스터링)
         clusters = {
             '제과': ['제과', '제빵', '베이킹', '용품', '재료', '홈베이킹'],
             '맛': ['맛', '달달', '부드러운', '고소', '진한'],
@@ -117,30 +114,24 @@ class SEOManager:
             '용도': ['자판기', '식자재', '요리']
         }
 
-        # 1차 선택: 클러스터별 가장 빈도 높은 '확장형 단어' 1개씩 선별
         for t, c in valid_candidates:
             matched_root = None
             for root, keywords in clusters.items():
                 if any(k in t for k in keywords):
                     matched_root = root
                     break
-            
-            if matched_root:
-                if matched_root not in used_roots:
-                    final_tags.append((t, c))
-                    used_roots.add(matched_root)
+            if matched_root and matched_root not in used_roots:
+                final_tags.append((t, c))
+                used_roots.add(matched_root)
 
-        # 2차 선택: 남은 자리를 빈도수 높은 단어로 채우되 상호 포함 관계 철저히 배제
         for t, c in valid_candidates:
             if len(final_tags) >= 10: break
             if any(t == existing[0] for existing in final_tags): continue
-            
             is_redundant = False
             for existing_t, _ in final_tags:
                 if t in existing_t or existing_t in t:
                     is_redundant = True
                     break
-            
             if not is_redundant:
                 final_tags.append((t, c))
         
@@ -152,10 +143,19 @@ class SEOManager:
 st.sidebar.header("📁 Step 1. 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
-st.sidebar.header("🎯 Step 2. 수동 키워드 설정")
+st.sidebar.header("🎯 Step 2. 전략 설정")
 manual_input = st.sidebar.text_input(
     "실제 구매 유입 키워드 입력", 
     placeholder="예: 맛있는 속편한 국내산"
+)
+
+# [추가] 총 키워드 수 설정 입력란
+total_kw_count = st.sidebar.number_input(
+    "상품명 총 키워드 수 설정", 
+    min_value=5, 
+    max_value=25, 
+    value=12,
+    help="수동 입력 키워드를 포함한 상품명의 최종 단어 개수를 정합니다. 네이버는 보통 10~15개를 권장합니다."
 )
 
 if uploaded_file:
@@ -171,9 +171,10 @@ if uploaded_file:
 
     if df is not None:
         manager = SEOManager(df)
-        manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input)
+        # [수정] total_kw_count를 분석 함수에 전달
+        manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input, total_kw_count)
 
-        st.success("✨ 키워드 조합 확장을 극대화한 SEO 분석이 완료되었습니다!")
+        st.success(f"✨ 총 {total_kw_count}개의 키워드 조합 분석이 완료되었습니다!")
 
         # 섹션 1: 상품명
         st.header("🏷️ 1. 전략적 상품명 조합")
@@ -182,10 +183,11 @@ if uploaded_file:
             st.subheader("✅ 완성된 상품명")
             full_title = " ".join(manual_keys + [p[0] for p in auto_keys_pairs])
             st.code(full_title, language=None)
+            st.caption(f"수동 키워드 {len(manual_keys)}개 + AI 자동 키워드 {len(auto_keys_pairs)}개")
         with col2:
             st.subheader("📊 자동 키워드 빈도")
             auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
-            auto_df.index = auto_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            auto_df.index = auto_df.index + 1
             st.table(auto_df)
 
         st.markdown("---")
@@ -197,27 +199,23 @@ if uploaded_file:
             for s, c in specs: st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
         with col4:
             spec_df = pd.DataFrame(specs, columns=['속성값', '빈도'])
-            spec_df.index = spec_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            spec_df.index = spec_df.index + 1
             st.table(spec_df)
 
         st.markdown("---")
 
         # 섹션 3: 태그
-        st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
+        st.header("🔍 3. 확장 검색 태그")
         col5, col6 = st.columns([2, 1])
         with col5:
             st.subheader("✅ 최적화 태그 10선")
             tag_display = ", ".join([f"#{t[0]}" for t in tags])
             st.warning(tag_display)
-            st.info("""
-            **업데이트된 로직:** - '#제과용', '#제과제빵용품' 등을 '#제과제빵재료'로 통합 관리하여 중복을 피했습니다.
-            - 남는 칸에 '맛', '차(Tea)', '영양' 등 서로 다른 카테고리의 태그를 배치하여 검색 그물을 극대화했습니다.
-            """)
         with col6:
             st.subheader("📊 태그 인식 데이터")
             tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
-            tag_df.index = tag_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            tag_df.index = tag_df.index + 1
             st.table(tag_df)
 
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드해주세요.")
+    st.info("왼쪽 사이드바에서 파일을 업로드하고 설정을 확인해주세요.")
