@@ -29,7 +29,6 @@ class SEOManager:
         sub_splits = ['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량']
         
         for word in raw_words:
-            # 제외 리스트 포함 여부 및 숫자 포함 여부 체크
             if word in self.exclude_brands or any(char.isdigit() for char in word):
                 continue
             
@@ -64,14 +63,10 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, manual_input, add_input, total_target_count):
-        # 수동 입력(유입) 및 추가 희망 키워드 리스트화
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
         add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
-        
-        # 고정 배치 키워드 (유입 + 추가)
         fixed_keywords = manual_keywords + add_keywords
         
-        # [1] 상품명 분석
         name_terms = []
         for name in self.df['상품명']:
             name_terms.extend(self.split_base_terms(name))
@@ -79,16 +74,13 @@ class SEOManager:
         name_freq = Counter(name_terms).most_common(50)
         auto_candidates = []
         for w, c in name_freq:
-            # 고정 키워드와 중복되거나 의미가 겹치는 단어 제외
-            if not any(fixed_w in w or w in fixed_w for fixed_w in fixed_keywords):
+            if not any(fixed_w in w or w in manual_w for manual_w in [w] for fixed_w in fixed_keywords):
                 auto_candidates.append((w, c))
         
-        # 총 키워드 수에서 고정 키워드 수를 뺀 나머지만 AI가 채움
         remain_count = max(0, total_target_count - len(fixed_keywords))
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
-        # [2] 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -96,7 +88,6 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        # [3] 태그 분석
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
@@ -156,9 +147,14 @@ manual_input = st.sidebar.text_input("유입 키워드 (구매 유도)", placeho
 add_input = st.sidebar.text_input("추가할 키워드 (고정 배치)", placeholder="예: 국내산 당일발송")
 exclude_input = st.sidebar.text_input("제외할 키워드 (분석 제외)", placeholder="예: 무설탕 비건")
 
-total_kw_count = st.sidebar.number_input("상품명 총 키워드 수", min_value=5, max_value=25, value=12)
+# ★ [수정 완료] 기본값을 11로 변경
+total_kw_count = st.sidebar.number_input(
+    "상품명 총 키워드 수", 
+    min_value=5, 
+    max_value=25, 
+    value=11
+)
 
-# 사용자 제외 키워드 리스트화
 user_exclude_list = [w.strip() for w in exclude_input.split() if len(w.strip()) > 0]
 
 if uploaded_file:
@@ -171,10 +167,9 @@ if uploaded_file:
 
     if df is not None:
         manager = SEOManager(df, user_exclude_list)
-        # 분석 함수에 추가 키워드(add_input)도 전달
         fixed_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input, add_input, total_kw_count)
 
-        st.success(f"✨ 설정하신 조건에 따른 최적화 분석이 완료되었습니다!")
+        st.success(f"✨ 총 {total_kw_count}개 키워드 타겟팅 분석이 완료되었습니다!")
 
         # 섹션 1: 상품명
         st.header("🏷️ 1. 전략적 상품명 조합")
@@ -183,9 +178,9 @@ if uploaded_file:
             st.subheader("✅ 완성된 상품명")
             full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
             st.code(full_title, language=None)
-            st.caption(f"고정 키워드(유입+추가) {len(fixed_keys)}개 + AI 자동 키워드 {len(auto_keys_pairs)}개")
+            st.caption(f"고정 키워드 {len(fixed_keys)}개 + AI 자동 키워드 {len(auto_keys_pairs)}개")
         with col2:
-            st.subheader("📊 자동 키워드 빈도 (제외어 반영)")
+            st.subheader("📊 자동 키워드 빈도")
             auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
             auto_df.index = auto_df.index + 1
             st.table(auto_df)
@@ -211,7 +206,6 @@ if uploaded_file:
             st.subheader("✅ 최적화 태그 10선")
             tag_display = ", ".join([f"#{t[0]}" for t in tags])
             st.warning(tag_display)
-            st.info(f"**제외 반영:** '{exclude_input}'에 입력된 단어들은 태그에서도 제외되었습니다.")
         with col6:
             st.subheader("📊 태그 인식 데이터")
             tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
