@@ -10,16 +10,17 @@ st.markdown("---")
 
 # 2. 전문 SEO 분석 로직 클래스
 class SEOManager:
-    def __init__(self, df):
+    def __init__(self, df, user_exclude_list):
         self.df = df
+        # 기본 브랜드 제외 리스트 + 사용자 입력 제외 키워드 통합
         self.exclude_brands = [
             '매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', 
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
             '희창유업', '담터', '연세유업', '매일유업'
-        ]
+        ] + user_exclude_list
 
     def split_base_terms(self, text):
-        """복합 명사 분리 및 수치값/브랜드 제거"""
+        """복합 명사 분리 및 수치값/브랜드/제외어 제거"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
@@ -28,6 +29,7 @@ class SEOManager:
         sub_splits = ['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량']
         
         for word in raw_words:
+            # 제외 리스트 포함 여부 및 숫자 포함 여부 체크
             if word in self.exclude_brands or any(char.isdigit() for char in word):
                 continue
             
@@ -36,7 +38,7 @@ class SEOManager:
                 if sub in word and word != sub:
                     terms.append(sub)
                     rem = word.replace(sub, '').strip()
-                    if len(rem) > 1 and not any(char.isdigit() for char in rem):
+                    if len(rem) > 1 and not any(char.isdigit() for char in rem) and rem not in self.exclude_brands:
                         terms.append(rem)
                     found_sub = True
                     break
@@ -61,8 +63,13 @@ class SEOManager:
 
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
-    def run_analysis(self, manual_input, total_target_count):
+    def run_analysis(self, manual_input, add_input, total_target_count):
+        # 수동 입력(유입) 및 추가 희망 키워드 리스트화
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
+        add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
+        
+        # 고정 배치 키워드 (유입 + 추가)
+        fixed_keywords = manual_keywords + add_keywords
         
         # [1] 상품명 분석
         name_terms = []
@@ -72,11 +79,12 @@ class SEOManager:
         name_freq = Counter(name_terms).most_common(50)
         auto_candidates = []
         for w, c in name_freq:
-            if not any(manual_w in w or w in manual_w for manual_w in manual_keywords):
+            # 고정 키워드와 중복되거나 의미가 겹치는 단어 제외
+            if not any(fixed_w in w or w in fixed_w for fixed_w in fixed_keywords):
                 auto_candidates.append((w, c))
         
-        # [수정] 사용자가 설정한 총 키워드 수에서 수동 키워드 수를 뺌
-        remain_count = max(0, total_target_count - len(manual_keywords))
+        # 총 키워드 수에서 고정 키워드 수를 뺀 나머지만 AI가 채움
+        remain_count = max(0, total_target_count - len(fixed_keywords))
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
@@ -96,7 +104,7 @@ class SEOManager:
                 tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
         tag_freq = Counter(tag_raw_list).most_common(150)
-        current_title_words = manual_keywords + [p[0] for p in readable_auto_pairs]
+        current_title_words = fixed_keywords + [p[0] for p in readable_auto_pairs]
         
         valid_candidates = []
         for t, c in tag_freq:
@@ -137,26 +145,21 @@ class SEOManager:
         
         final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
-        return manual_keywords, readable_auto_pairs, spec_counts, final_tags
+        return fixed_keywords, readable_auto_pairs, spec_counts, final_tags
 
 # 3. 사용자 인터페이스 (GUI)
 st.sidebar.header("📁 Step 1. 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
-st.sidebar.header("🎯 Step 2. 전략 설정")
-manual_input = st.sidebar.text_input(
-    "실제 구매 유입 키워드 입력", 
-    placeholder="예: 맛있는 속편한 국내산"
-)
+st.sidebar.header("🎯 Step 2. 상품명 키워드 커스텀")
+manual_input = st.sidebar.text_input("유입 키워드 (구매 유도)", placeholder="예: 맛있는 속편한")
+add_input = st.sidebar.text_input("추가할 키워드 (고정 배치)", placeholder="예: 국내산 당일발송")
+exclude_input = st.sidebar.text_input("제외할 키워드 (분석 제외)", placeholder="예: 무설탕 비건")
 
-# [추가] 총 키워드 수 설정 입력란
-total_kw_count = st.sidebar.number_input(
-    "상품명 총 키워드 수 설정", 
-    min_value=5, 
-    max_value=25, 
-    value=12,
-    help="수동 입력 키워드를 포함한 상품명의 최종 단어 개수를 정합니다. 네이버는 보통 10~15개를 권장합니다."
-)
+total_kw_count = st.sidebar.number_input("상품명 총 키워드 수", min_value=5, max_value=25, value=12)
+
+# 사용자 제외 키워드 리스트화
+user_exclude_list = [w.strip() for w in exclude_input.split() if len(w.strip()) > 0]
 
 if uploaded_file:
     df = None
@@ -164,28 +167,25 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file, encoding='cp949')
     except:
         uploaded_file.seek(0)
-        try:
-            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-        except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
+        df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
 
     if df is not None:
-        manager = SEOManager(df)
-        # [수정] total_kw_count를 분석 함수에 전달
-        manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input, total_kw_count)
+        manager = SEOManager(df, user_exclude_list)
+        # 분석 함수에 추가 키워드(add_input)도 전달
+        fixed_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input, add_input, total_kw_count)
 
-        st.success(f"✨ 총 {total_kw_count}개의 키워드 조합 분석이 완료되었습니다!")
+        st.success(f"✨ 설정하신 조건에 따른 최적화 분석이 완료되었습니다!")
 
         # 섹션 1: 상품명
         st.header("🏷️ 1. 전략적 상품명 조합")
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("✅ 완성된 상품명")
-            full_title = " ".join(manual_keys + [p[0] for p in auto_keys_pairs])
+            full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
             st.code(full_title, language=None)
-            st.caption(f"수동 키워드 {len(manual_keys)}개 + AI 자동 키워드 {len(auto_keys_pairs)}개")
+            st.caption(f"고정 키워드(유입+추가) {len(fixed_keys)}개 + AI 자동 키워드 {len(auto_keys_pairs)}개")
         with col2:
-            st.subheader("📊 자동 키워드 빈도")
+            st.subheader("📊 자동 키워드 빈도 (제외어 반영)")
             auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
             auto_df.index = auto_df.index + 1
             st.table(auto_df)
@@ -211,11 +211,11 @@ if uploaded_file:
             st.subheader("✅ 최적화 태그 10선")
             tag_display = ", ".join([f"#{t[0]}" for t in tags])
             st.warning(tag_display)
+            st.info(f"**제외 반영:** '{exclude_input}'에 입력된 단어들은 태그에서도 제외되었습니다.")
         with col6:
             st.subheader("📊 태그 인식 데이터")
             tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
             tag_df.index = tag_df.index + 1
             st.table(tag_df)
-
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드하고 설정을 확인해주세요.")
+    st.info("파일을 업로드하고 전략 키워드를 설정해주세요.")
