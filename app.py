@@ -44,23 +44,24 @@ class SEOManager:
                 terms.append(word)
         return terms
 
-    def reorder_for_readability(self, words):
-        """AI 분석 단어를 가독성 높은 순서로 재배치"""
+    def reorder_for_readability(self, word_count_pairs):
+        """AI 분석 단어를 가독성 높은 순서로 재배치 (빈도수 유지)"""
         # 그룹 정의
         identity = ['전지', '분유', '우유', '탈지', '전지밀'] # 제품 본질
         form = ['분말', '가루', '스틱', '액상'] # 제형
         usage = ['자판기', '업소용', '대용량', '식자재', '제과', '제빵', '베이킹'] # 용도
         desc = ['진한', '고소한', '맛있는', '추억', '추천', '속편한'] # 맛/속성/감성
 
-        def get_priority(word):
+        def get_priority(pair):
+            word = pair[0]
             if any(core in word for core in identity): return 1
             if any(core in word for core in form): return 2
             if any(core in word for core in usage): return 3
             if any(core in word for core in desc): return 4
             return 5
 
-        # 우선순위 그룹별로 정렬하되, 그룹 내에서는 기존 빈도순 유지
-        return sorted(words, key=lambda x: get_priority(x))
+        # 우선순위 그룹별로 정렬
+        return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, manual_input):
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
@@ -71,19 +72,18 @@ class SEOManager:
         
         name_freq = Counter(name_terms).most_common(50)
         
-        # 중복 제거 및 후보 선별
+        # 중복 제거 및 후보 선별 (단어와 빈도수를 함께 저장)
         auto_candidates = []
         for w, c in name_freq:
             if not any(manual_w in w or w in manual_w for manual_w in manual_keywords):
-                auto_names_only = w # 단어만 추출
-                auto_candidates.append(w)
+                auto_candidates.append((w, c))
         
         # 12단어 중 남은 수량만큼 선별
         remain_count = max(0, 12 - len(manual_keywords))
-        selected_auto = auto_candidates[:remain_count]
+        selected_auto_pairs = auto_candidates[:remain_count]
         
-        # [핵심] 가독성 재배치 적용
-        readable_auto = self.reorder_for_readability(selected_auto)
+        # [핵심] 가독성 재배치 적용 (빈도수 유지됨)
+        readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
         # 속성 및 태그 로직
         spec_list = []
@@ -100,7 +100,8 @@ class SEOManager:
                 tag_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
         tag_freq = Counter(tag_list).most_common(100)
-        current_title_words = manual_keywords + readable_auto
+        # 태그 검사용 단어 리스트 추출
+        current_title_words = manual_keywords + [p[0] for p in readable_auto_pairs]
         
         candidates = []
         for t, c in tag_freq:
@@ -120,7 +121,7 @@ class SEOManager:
         final_pool = [c for c in candidates if c['tag'] not in tags_to_skip]
         final_tags = [(c['tag'], c['count']) for c in final_pool[:10]]
         
-        return manual_keywords, readable_auto, spec_counts, final_tags
+        return manual_keywords, readable_auto_pairs, spec_counts, final_tags
 
 # 3. 사용자 인터페이스 (GUI)
 st.sidebar.header("📁 Step 1. 데이터 업로드")
@@ -130,7 +131,7 @@ st.sidebar.header("🎯 Step 2. 수동 키워드 설정")
 manual_input = st.sidebar.text_input(
     "실제 구매 유입 키워드 입력", 
     placeholder="예: 맛있는 속편한 국내산",
-    help="이 키워드는 상품명 맨 앞에 고정되며, 가독성 재배치 로직이 적용되지 않고 입력한 순서대로 유지됩니다."
+    help="이 키워드는 상품명 맨 앞에 고정됩니다."
 )
 
 if uploaded_file:
@@ -146,23 +147,25 @@ if uploaded_file:
 
     if df is not None:
         manager = SEOManager(df)
-        manual_keys, auto_keys, specs, tags = manager.run_analysis(manual_input)
+        manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input)
 
-        st.success("✨ 가독성 최적화 분석이 완료되었습니다!")
+        st.success("✨ 데이터 분석 및 가독성 최적화가 완료되었습니다!")
 
         # --- 섹션 1: 상품명 ---
-        st.header("🏷️ 1. 전략적 상품명 조합 (가독성 재배치 반영)")
+        st.header("🏷️ 1. 전략적 상품명 조합 (빈도수 반영)")
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("✅ 완성된 상품명")
-            full_title = " ".join(manual_keys + auto_keys)
+            # auto_keys_pairs에서 단어(index 0)만 추출하여 조합
+            full_title = " ".join(manual_keys + [p[0] for p in auto_keys_pairs])
             st.code(full_title, language=None)
-            st.info("**가독성 로직:** [수동입력] + [제품본질] + [제형] + [용도] + [속성] 순으로 배치되어 소비자가 읽기 가장 편안한 구조입니다.")
+            st.info("**안내:** [수동 입력] 단어를 필두로, AI가 선별한 핵심 단어들이 가독성 순서에 맞춰 배치되었습니다.")
         
         with col2:
             st.subheader("📊 자동 선별 키워드 리스트")
-            # 가독성 순서대로 표기
-            st.table(pd.DataFrame(auto_keys, columns=['재배치된 단어']))
+            # 데이터프레임으로 변환하여 빈도수와 함께 표기
+            auto_df = pd.DataFrame(auto_keys_pairs, columns=['재배치된 단어', '빈도(회)'])
+            st.table(auto_df)
 
         st.markdown("---")
 
@@ -180,7 +183,7 @@ if uploaded_file:
 
         st.markdown("---")
 
-        # --- 섹션 3: 확장 태그 ---
+        # --- 섹션 3: 확장 검색 태그 ---
         st.header("🔍 3. 확장 검색 태그")
         col5, col6 = st.columns([2, 1])
         with col5:
@@ -192,15 +195,5 @@ if uploaded_file:
             tag_df = pd.DataFrame(tags, columns=['태그명', '빈도'])
             st.table(tag_df)
 
-        with st.expander("💡 [매니저 필독] 가독성 재배치 원리"):
-            st.write("""
-            1. **수동 키워드 존중:** 대표님이 직접 입력하신 단어는 의도가 명확하므로 순서 변경 없이 맨 앞에 배치합니다.
-            2. **AI 키워드 그룹화:** AI가 뽑은 핵심 단어들을 아래 순서로 자동 재정렬합니다.
-                - **1순위 (본질):** 전지, 분유, 우유 등 상품의 정체성
-                - **2순위 (형태):** 분말, 가루, 스틱 등 외형적 특징
-                - **3순위 (용도):** 자판기, 업소용, 베이킹 등 구매 목적
-                - **4순위 (속성):** 진한, 고소한, 추억 등 감성/풍미
-            3. **결과:** 검색 로직(SEO)을 만족하면서도 고객이 읽었을 때 문장이 매끄러워 구매 전환율이 높아집니다.
-            """)
 else:
     st.info("왼쪽 사이드바에서 파일을 업로드하고 구매 키워드를 입력해 보세요.")
