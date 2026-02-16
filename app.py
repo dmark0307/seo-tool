@@ -4,7 +4,7 @@ import re
 from collections import Counter
 
 # 1. 페이지 설정
-st.set_page_config(page_title="네이버 SEO 통합 분석 도구", layout="wide")
+st.set_page_config(page_title="네이버 SEO NLU 마스터", layout="wide")
 st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
 st.markdown("---")
 
@@ -127,19 +127,14 @@ class SEOManager:
             
             if matched_root:
                 if matched_root not in used_roots:
-                    # 해당 클러스터에서 처음 나온(가장 빈도 높은) 단어 선택
                     final_tags.append((t, c))
                     used_roots.add(matched_root)
-            else:
-                # 클러스터에 속하지 않는 유니크 단어(예: 국내산)는 일단 보류 후 2차에서 처리
-                pass
 
         # 2차 선택: 남은 자리를 빈도수 높은 단어로 채우되 상호 포함 관계 철저히 배제
         for t, c in valid_candidates:
             if len(final_tags) >= 10: break
             if any(t == existing[0] for existing in final_tags): continue
             
-            # 상호 포함 관계 체크 (예: 제과용 vs 제과제빵재료)
             is_redundant = False
             for existing_t, _ in final_tags:
                 if t in existing_t or existing_t in t:
@@ -149,7 +144,6 @@ class SEOManager:
             if not is_redundant:
                 final_tags.append((t, c))
         
-        # 최종 빈도수 순으로 10개 정렬
         final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
         return manual_keywords, readable_auto_pairs, spec_counts, final_tags
@@ -190,7 +184,9 @@ if uploaded_file:
             st.code(full_title, language=None)
         with col2:
             st.subheader("📊 자동 키워드 빈도")
-            st.table(pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)']))
+            auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
+            auto_df.index = auto_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            st.table(auto_df)
 
         st.markdown("---")
 
@@ -200,11 +196,13 @@ if uploaded_file:
         with col3:
             for s, c in specs: st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
         with col4:
-            st.table(pd.DataFrame(specs, columns=['속성값', '빈도']))
+            spec_df = pd.DataFrame(specs, columns=['속성값', '빈도'])
+            spec_df.index = spec_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            st.table(spec_df)
 
         st.markdown("---")
 
-        # 섹션 3: 태그 (매니저님 요청 집중 반영)
+        # 섹션 3: 태그
         st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
         col5, col6 = st.columns([2, 1])
         with col5:
@@ -217,7 +215,9 @@ if uploaded_file:
             """)
         with col6:
             st.subheader("📊 태그 인식 데이터")
-            st.table(pd.DataFrame(tags, columns=['태그명', '인식 횟수']))
+            tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
+            tag_df.index = tag_df.index + 1 # 인덱스를 1부터 시작하도록 수정
+            st.table(tag_df)
 
 else:
     st.info("왼쪽 사이드바에서 파일을 업로드해주세요.")
