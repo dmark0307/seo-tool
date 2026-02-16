@@ -19,7 +19,7 @@ class SEOManager:
         ]
 
     def split_base_terms(self, text):
-        """복합 명사를 분리하여 기초 단어(Base Term) 추출 및 수치값/브랜드 제거"""
+        """복합 명사 분리 및 수치값/브랜드 제거"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
@@ -45,12 +45,11 @@ class SEOManager:
         return terms
 
     def reorder_for_readability(self, word_count_pairs):
-        """AI 분석 단어를 가독성 높은 순서로 재배치 (빈도수 유지)"""
-        # 그룹 정의
-        identity = ['전지', '분유', '우유', '탈지', '전지밀'] # 제품 본질
-        form = ['분말', '가루', '스틱', '액상'] # 제형
-        usage = ['자판기', '업소용', '대용량', '식자재', '제과', '제빵', '베이킹'] # 용도
-        desc = ['진한', '고소한', '맛있는', '추억', '추천', '속편한'] # 맛/속성/감성
+        """가독성 그룹별 재배치"""
+        identity = ['전지', '분유', '우유', '탈지', '전지밀']
+        form = ['분말', '가루', '스틱', '액상']
+        usage = ['자판기', '업소용', '대용량', '식자재', '제과', '제빵', '베이킹']
+        desc = ['진한', '고소한', '맛있는', '추억', '추천', '속편한']
 
         def get_priority(pair):
             word = pair[0]
@@ -60,32 +59,27 @@ class SEOManager:
             if any(core in word for core in desc): return 4
             return 5
 
-        # 우선순위 그룹별로 정렬
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, manual_input):
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
         
+        # [1] 상품명 분석
         name_terms = []
         for name in self.df['상품명']:
             name_terms.extend(self.split_base_terms(name))
         
         name_freq = Counter(name_terms).most_common(50)
-        
-        # 중복 제거 및 후보 선별 (단어와 빈도수를 함께 저장)
         auto_candidates = []
         for w, c in name_freq:
             if not any(manual_w in w or w in manual_w for manual_w in manual_keywords):
                 auto_candidates.append((w, c))
         
-        # 12단어 중 남은 수량만큼 선별
         remain_count = max(0, 12 - len(manual_keywords))
         selected_auto_pairs = auto_candidates[:remain_count]
-        
-        # [핵심] 가독성 재배치 적용 (빈도수 유지됨)
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
-        # 속성 및 태그 로직
+        # [2] 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -93,33 +87,70 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        tag_list = []
+        # [3] 태그 분석 - 중복 배제 및 조합 확장 로직 대폭 강화
+        tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
                 parts = [t.strip() for t in str(tags).split(',')]
-                tag_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
+                tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
-        tag_freq = Counter(tag_list).most_common(100)
-        # 태그 검사용 단어 리스트 추출
+        tag_freq = Counter(tag_raw_list).most_common(150)
         current_title_words = manual_keywords + [p[0] for p in readable_auto_pairs]
         
-        candidates = []
+        # 기초 필터링 (수치 제외, 제목 중복 제외)
+        valid_candidates = []
         for t, c in tag_freq:
             if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
-                candidates.append({'tag': t, 'count': c})
+                valid_candidates.append((t, c))
+
+        # --- 중복 배제 및 조합 확장 알고리즘 ---
+        final_tags = []
+        used_roots = set()
         
-        tags_to_skip = set()
-        for i in range(len(candidates)):
-            t1 = candidates[i]['tag']
-            for j in range(len(candidates)):
-                if i == j: continue
-                t2 = candidates[j]['tag']
-                if t1 in t2:
-                    tags_to_skip.add(t1)
+        # 유사 의미 그룹핑용 키워드 (클러스터링)
+        clusters = {
+            '제과': ['제과', '제빵', '베이킹', '용품', '재료', '홈베이킹'],
+            '맛': ['맛', '달달', '부드러운', '고소', '진한'],
+            '영양': ['영양', '단백질', '건강', '몸에좋은'],
+            '차': ['차', '음료', '커피', '티'],
+            '간식': ['간식', '주전부리'],
+            '용도': ['자판기', '식자재', '요리']
+        }
+
+        # 1차 선택: 클러스터별 가장 빈도 높은 '확장형 단어' 1개씩 선별
+        for t, c in valid_candidates:
+            matched_root = None
+            for root, keywords in clusters.items():
+                if any(k in t for k in keywords):
+                    matched_root = root
                     break
+            
+            if matched_root:
+                if matched_root not in used_roots:
+                    # 해당 클러스터에서 처음 나온(가장 빈도 높은) 단어 선택
+                    final_tags.append((t, c))
+                    used_roots.add(matched_root)
+            else:
+                # 클러스터에 속하지 않는 유니크 단어(예: 국내산)는 일단 보류 후 2차에서 처리
+                pass
+
+        # 2차 선택: 남은 자리를 빈도수 높은 단어로 채우되 상호 포함 관계 철저히 배제
+        for t, c in valid_candidates:
+            if len(final_tags) >= 10: break
+            if any(t == existing[0] for existing in final_tags): continue
+            
+            # 상호 포함 관계 체크 (예: 제과용 vs 제과제빵재료)
+            is_redundant = False
+            for existing_t, _ in final_tags:
+                if t in existing_t or existing_t in t:
+                    is_redundant = True
+                    break
+            
+            if not is_redundant:
+                final_tags.append((t, c))
         
-        final_pool = [c for c in candidates if c['tag'] not in tags_to_skip]
-        final_tags = [(c['tag'], c['count']) for c in final_pool[:10]]
+        # 최종 빈도수 순으로 10개 정렬
+        final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
         return manual_keywords, readable_auto_pairs, spec_counts, final_tags
 
@@ -130,8 +161,7 @@ uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=
 st.sidebar.header("🎯 Step 2. 수동 키워드 설정")
 manual_input = st.sidebar.text_input(
     "실제 구매 유입 키워드 입력", 
-    placeholder="예: 맛있는 속편한 국내산",
-    help="이 키워드는 상품명 맨 앞에 고정됩니다."
+    placeholder="예: 맛있는 속편한 국내산"
 )
 
 if uploaded_file:
@@ -149,51 +179,45 @@ if uploaded_file:
         manager = SEOManager(df)
         manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input)
 
-        st.success("✨ 데이터 분석 및 가독성 최적화가 완료되었습니다!")
+        st.success("✨ 키워드 조합 확장을 극대화한 SEO 분석이 완료되었습니다!")
 
-        # --- 섹션 1: 상품명 ---
-        st.header("🏷️ 1. 전략적 상품명 조합 (빈도수 반영)")
+        # 섹션 1: 상품명
+        st.header("🏷️ 1. 전략적 상품명 조합")
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("✅ 완성된 상품명")
-            # auto_keys_pairs에서 단어(index 0)만 추출하여 조합
             full_title = " ".join(manual_keys + [p[0] for p in auto_keys_pairs])
             st.code(full_title, language=None)
-            st.info("**안내:** [수동 입력] 단어를 필두로, AI가 선별한 핵심 단어들이 가독성 순서에 맞춰 배치되었습니다.")
-        
         with col2:
-            st.subheader("📊 자동 선별 키워드 리스트")
-            # 데이터프레임으로 변환하여 빈도수와 함께 표기
-            auto_df = pd.DataFrame(auto_keys_pairs, columns=['재배치된 단어', '빈도(회)'])
-            st.table(auto_df)
+            st.subheader("📊 자동 키워드 빈도")
+            st.table(pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)']))
 
         st.markdown("---")
 
-        # --- 섹션 2: 속성 키워드 ---
+        # 섹션 2: 속성
         st.header("⚙️ 2. 필터 노출용 속성값")
         col3, col4 = st.columns([2, 1])
         with col3:
-            st.subheader("✅ 권장 속성 리스트")
-            for s, c in specs:
-                st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
+            for s, c in specs: st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
         with col4:
-            st.subheader("📊 속성 인식 데이터")
-            spec_df = pd.DataFrame(specs, columns=['속성값', '빈도'])
-            st.table(spec_df)
+            st.table(pd.DataFrame(specs, columns=['속성값', '빈도']))
 
         st.markdown("---")
 
-        # --- 섹션 3: 확장 검색 태그 ---
-        st.header("🔍 3. 확장 검색 태그")
+        # 섹션 3: 태그 (매니저님 요청 집중 반영)
+        st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
         col5, col6 = st.columns([2, 1])
         with col5:
-            st.subheader("✅ 최종 태그 10선")
+            st.subheader("✅ 최적화 태그 10선")
             tag_display = ", ".join([f"#{t[0]}" for t in tags])
             st.warning(tag_display)
+            st.info("""
+            **업데이트된 로직:** - '#제과용', '#제과제빵용품' 등을 '#제과제빵재료'로 통합 관리하여 중복을 피했습니다.
+            - 남는 칸에 '맛', '차(Tea)', '영양' 등 서로 다른 카테고리의 태그를 배치하여 검색 그물을 극대화했습니다.
+            """)
         with col6:
             st.subheader("📊 태그 인식 데이터")
-            tag_df = pd.DataFrame(tags, columns=['태그명', '빈도'])
-            st.table(tag_df)
+            st.table(pd.DataFrame(tags, columns=['태그명', '인식 횟수']))
 
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드하고 구매 키워드를 입력해 보세요.")
+    st.info("왼쪽 사이드바에서 파일을 업로드해주세요.")
