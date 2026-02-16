@@ -12,7 +12,6 @@ st.markdown("---")
 class SEOManager:
     def __init__(self, df, user_exclude_list):
         self.df = df
-        # 기본 브랜드 제외 리스트 + 사용자 입력 제외 키워드 통합
         self.exclude_brands = [
             '매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', 
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
@@ -20,7 +19,6 @@ class SEOManager:
         ] + user_exclude_list
 
     def split_base_terms(self, text):
-        """복합 명사 분리 및 수치값/브랜드/제외어 제거"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
@@ -46,7 +44,6 @@ class SEOManager:
         return terms
 
     def reorder_for_readability(self, word_count_pairs):
-        """가독성 그룹별 재배치 (본질->제형->용도->속성)"""
         identity = ['전지', '분유', '우유', '탈지', '전지밀']
         form = ['분말', '가루', '스틱', '액상']
         usage = ['자판기', '업소용', '대용량', '식자재', '제과', '제빵', '베이킹']
@@ -63,12 +60,10 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, conversion_input, add_input, total_target_count):
-        # 구매전환 키워드(유입) + 추가 키워드(고정) 처리
         conversion_keywords = [w.strip() for w in conversion_input.split() if len(w.strip()) > 0]
         add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
         fixed_keywords = conversion_keywords + add_keywords
         
-        # [1] 상품명 분석
         name_terms = []
         for name in self.df['상품명']:
             name_terms.extend(self.split_base_terms(name))
@@ -83,7 +78,6 @@ class SEOManager:
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
-        # [2] 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -91,7 +85,6 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        # [3] 태그 분석
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
@@ -129,14 +122,13 @@ class SEOManager:
         
         final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
-        return fixed_keywords, readable_auto_pairs, spec_counts, final_tags
+        return conversion_keywords, readable_auto_pairs, spec_counts, final_tags, fixed_keywords
 
 # 3. 사용자 인터페이스 (GUI)
 st.sidebar.header("📁 Step 1. 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
 st.sidebar.header("🎯 Step 2. 전략 키워드 설정")
-# ★ [수정 완료] 명칭 변경: 유입 키워드 -> 구매전환 키워드
 conversion_input = st.sidebar.text_input("구매전환 키워드", placeholder="예: 맛있는 속편한")
 add_input = st.sidebar.text_input("추가할 키워드 (고정 배치)", placeholder="예: 국내산 당일발송")
 exclude_input = st.sidebar.text_input("제외할 키워드 (분석 제외)", placeholder="예: 브랜드명")
@@ -150,6 +142,10 @@ total_kw_count = st.sidebar.number_input(
 
 user_exclude_list = [w.strip() for w in exclude_input.split() if len(w.strip()) > 0]
 
+# 바이트 계산 함수 (EUC-KR 기준: 한글 2바이트, 영문/숫자/공백 1바이트)
+def calculate_bytes(text):
+    return len(text.encode('euc-kr', errors='replace'))
+
 if uploaded_file:
     try:
         df = pd.read_csv(uploaded_file, encoding='cp949')
@@ -158,20 +154,34 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
 
     manager = SEOManager(df, user_exclude_list)
-    fixed_keys, auto_keys_pairs, specs, tags = manager.run_analysis(conversion_input, add_input, total_kw_count)
+    conv_keys, auto_keys_pairs, specs, tags, fixed_keys = manager.run_analysis(conversion_input, add_input, total_kw_count)
 
-    st.success(f"✨ 총 {total_kw_count}개 키워드 타겟팅 분석이 완료되었습니다!")
+    st.success(f"✨ 분석이 완료되었습니다!")
 
     # 섹션 1: 상품명
     st.header("🏷️ 1. 전략적 상품명 조합")
     col1, col2 = st.columns([2, 1])
+    
+    full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
+    
     with col1:
         st.subheader("✅ 완성된 상품명")
-        full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
         st.code(full_title, language=None)
-        st.info("**가독성 전략:** [구매전환 키워드] + [제품본질] + [제형] + [용도] + [속성] 순으로 자동 정렬")
+        
+        # --- 지표 표시 구역 ---
+        st.markdown("#### 📊 상품명 분석 데이터")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("구매전환 키워드", f"{len(conv_keys)}개")
+        m2.metric("자동작성 키워드", f"{len(auto_keys_pairs)}개")
+        m3.metric("총 글자 수", f"{len(full_title)}자")
+        m4.metric("총 바이트(Byte)", f"{calculate_bytes(full_title)}B")
+        
+        st.info(f"**가독성 전략:** [구매전환/추가 키워드] + [제품본질] + [제형] + [용도] + [속성] 순 배치")
+        if calculate_bytes(full_title) > 50:
+            st.warning("⚠️ 현재 상품명이 50바이트를 초과했습니다. 네이버 쇼핑 노출 시 일부가 생략될 수 있습니다.")
+
     with col2:
-        st.subheader("📊 자동 키워드 빈도")
+        st.subheader("📈 자동 키워드 빈도")
         auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
         auto_df.index = auto_df.index + 1
         st.table(auto_df)
@@ -199,8 +209,8 @@ if uploaded_file:
         st.warning(tag_display)
     with col6:
         st.subheader("📊 태그 인식 데이터")
-        tag_df = pd.DataFrame(tags, columns=['태그명', '인식 횟수'])
+        tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
         tag_df.index = tag_df.index + 1
         st.table(tag_df)
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드하고 설정을 확인해주세요.")
+    st.info("파일을 업로드하면 SEO 분석 대시보드가 활성화됩니다.")
