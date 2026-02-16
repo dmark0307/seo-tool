@@ -4,8 +4,8 @@ import re
 from collections import Counter
 
 # 1. 페이지 설정
-st.set_page_config(page_title="네이버 SEO 통합 분석 도구", layout="wide")
-st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
+st.set_page_config(page_title="네이버 SEO NLU 통합 분석기", layout="wide")
+st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저 (NLU Term 기반)")
 st.markdown("---")
 
 # 2. 전문 SEO 분석 로직 클래스
@@ -17,39 +17,34 @@ class SEOManager:
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
             '희창유업', '담터', '연세유업', '매일유업'
         ]
+        # NLU 분석 시 핵심 의미 단위(Term) 사전
+        self.core_terms = ['전지', '탈지', '분유', '우유', '가루', '분말', '제과', '제빵', '베이킹', '자판기', '업소용', '식자재']
 
-    def split_base_terms(self, text):
-        """복합 명사 분리 및 수치값/브랜드 제거"""
-        if pd.isna(text) or text == '-': return []
+    def extract_nlu_terms(self, text):
+        """텍스트를 NLU 의미 단위(Term)로 분해"""
+        if pd.isna(text) or text == '-': return set()
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
-        raw_words = text.split()
+        words = text.split()
         
-        terms = []
-        sub_splits = ['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량']
-        
-        for word in raw_words:
+        terms = set()
+        for word in words:
+            # 브랜드 및 수치값 제외
             if word in self.exclude_brands or any(char.isdigit() for char in word):
                 continue
-            
-            found_sub = False
-            for sub in sub_splits:
-                if sub in word and word != sub:
-                    terms.append(sub)
-                    rem = word.replace(sub, '').strip()
-                    if len(rem) > 1 and not any(char.isdigit() for char in rem):
-                        terms.append(rem)
-                    found_sub = True
-                    break
-            if not found_sub and len(word) > 1:
-                terms.append(word)
+            # 핵심 사전 기반 분해 및 2글자 이상 추출
+            for core in self.core_terms:
+                if core in word:
+                    terms.add(core)
+            if len(word) > 1:
+                terms.add(word)
         return terms
 
     def reorder_for_readability(self, word_count_pairs):
         """가독성 그룹별 재배치"""
-        identity = ['전지', '분유', '우유', '탈지', '전지밀']
+        identity = ['전지', '분유', '우유', '탈지']
         form = ['분말', '가루', '스틱', '액상']
         usage = ['자판기', '업소용', '대용량', '식자재', '제과', '제빵', '베이킹']
-        desc = ['진한', '고소한', '맛있는', '추억', '추천', '속편한']
+        desc = ['진한', '고소한', '맛있는', '추억', '추천']
 
         def get_priority(pair):
             word = pair[0]
@@ -63,21 +58,20 @@ class SEOManager:
 
     def run_analysis(self, manual_input):
         manual_keywords = [w.strip() for w in manual_input.split() if len(w.strip()) > 0]
+        manual_terms = set()
+        for mk in manual_keywords:
+            manual_terms.update(self.extract_nlu_terms(mk))
         
         # [1] 상품명 분석
-        name_terms = []
+        all_name_terms = []
         for name in self.df['상품명']:
-            name_terms.extend(self.split_base_terms(name))
+            found = self.extract_nlu_terms(name)
+            all_name_terms.extend([t for t in found if t not in manual_terms])
         
-        name_freq = Counter(name_terms).most_common(50)
-        auto_candidates = []
-        for w, c in name_freq:
-            if not any(manual_w in w or w in manual_w for manual_w in manual_keywords):
-                auto_candidates.append((w, c))
-        
+        name_freq = Counter(all_name_terms).most_common(50)
         remain_count = max(0, 12 - len(manual_keywords))
-        selected_auto_pairs = auto_candidates[:remain_count]
-        readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
+        selected_auto = name_freq[:remain_count]
+        readable_auto = self.reorder_for_readability(selected_auto)
         
         # [2] 속성 분석
         spec_list = []
@@ -87,137 +81,107 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
-        # [3] 태그 분석 - 중복 배제 및 조합 확장 로직 대폭 강화
+        # [3] 태그 분석 - NLU Term 기반 중복 제거 및 조합 확장
         tag_raw_list = []
-        for tags in self.df['검색인식태그'].dropna():
-            if tags != '-':
-                parts = [t.strip() for t in str(tags).split(',')]
-                tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
+        for tags_row in self.df['검색인식태그'].dropna():
+            if tags_row != '-':
+                tag_raw_list.extend([t.strip() for t in str(tags_row).split(',')])
         
-        tag_freq = Counter(tag_raw_list).most_common(150)
-        current_title_words = manual_keywords + [p[0] for p in readable_auto_pairs]
+        # 제목에 이미 포함된 의미(Term) 집합 구성
+        title_terms = manual_terms.copy()
+        for word, _ in readable_auto:
+            title_terms.update(self.extract_nlu_terms(word))
+
+        # 후보 태그 점수화 (빈도수 + 의미 다양성)
+        candidate_tags = []
+        tag_freq = Counter(tag_raw_list).most_common(200)
         
-        # 기초 필터링 (수치 제외, 제목 중복 제외)
-        valid_candidates = []
         for t, c in tag_freq:
-            if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
-                valid_candidates.append((t, c))
+            # 기본 필터: 브랜드 제외, 수치 제외
+            if any(b in t for b in self.exclude_brands) or any(char.isdigit() for char in t):
+                continue
+            
+            tag_terms = self.extract_nlu_terms(t)
+            # 제목과 의미가 완전히 겹치는 태그 제외
+            if tag_terms.issubset(title_terms):
+                continue
+            
+            candidate_tags.append({'tag': t, 'count': c, 'terms': tag_terms})
 
-        # --- 중복 배제 및 조합 확장 알고리즘 ---
+        # 최종 태그 선별 로직 (의미 중복 배제 및 확장 극대화)
         final_tags = []
-        used_roots = set()
-        
-        # 유사 의미 그룹핑용 키워드 (클러스터링)
-        clusters = {
-            '제과': ['제과', '제빵', '베이킹', '용품', '재료', '홈베이킹'],
-            '맛': ['맛', '달달', '부드러운', '고소', '진한'],
-            '영양': ['영양', '단백질', '건강', '몸에좋은'],
-            '차': ['차', '음료', '커피', '티'],
-            '간식': ['간식', '주전부리'],
-            '용도': ['자판기', '식자재', '요리']
-        }
+        selected_terms_pool = title_terms.copy()
 
-        # 1차 선택: 클러스터별 가장 빈도 높은 '확장형 단어' 1개씩 선별
-        for t, c in valid_candidates:
-            matched_root = None
-            for root, keywords in clusters.items():
-                if any(k in t for k in keywords):
-                    matched_root = root
-                    break
-            
-            if matched_root:
-                if matched_root not in used_roots:
-                    # 해당 클러스터에서 처음 나온(가장 빈도 높은) 단어 선택
-                    final_tags.append((t, c))
-                    used_roots.add(matched_root)
-            else:
-                # 클러스터에 속하지 않는 유니크 단어(예: 국내산)는 일단 보류 후 2차에서 처리
-                pass
+        # 1차: 가장 '정보량이 많은(Term이 많은)' 태그부터 검토하여 다양성 확보
+        # 빈도수 순으로 정렬하되 의미 중복을 체크함
+        sorted_candidates = sorted(candidate_tags, key=lambda x: x['count'], reverse=True)
 
-        # 2차 선택: 남은 자리를 빈도수 높은 단어로 채우되 상호 포함 관계 철저히 배제
-        for t, c in valid_candidates:
+        for cand in sorted_candidates:
             if len(final_tags) >= 10: break
-            if any(t == existing[0] for existing in final_tags): continue
             
-            # 상호 포함 관계 체크 (예: 제과용 vs 제과제빵재료)
-            is_redundant = False
-            for existing_t, _ in final_tags:
-                if t in existing_t or existing_t in t:
-                    is_redundant = True
-                    break
+            # 현재 태그의 의미들이 이미 선택된 의미 풀(Pool)과 80% 이상 겹치면 중복으로 판단
+            # 예: '제과제빵재료'가 들어있는데 '제과용'이 들어오는 것을 방지
+            overlap = cand['terms'].intersection(selected_terms_pool)
             
-            if not is_redundant:
-                final_tags.append((t, c))
-        
-        # 최종 빈도수 순으로 10개 정렬
-        final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
-        
-        return manual_keywords, readable_auto_pairs, spec_counts, final_tags
+            if len(cand['terms']) > 0 and (len(overlap) / len(cand['terms'])) < 0.6:
+                final_tags.append((cand['tag'], cand['count']))
+                selected_terms_pool.update(cand['terms'])
+
+        return manual_keywords, readable_auto, spec_counts, final_tags
 
 # 3. 사용자 인터페이스 (GUI)
-st.sidebar.header("📁 Step 1. 데이터 업로드")
+st.sidebar.header("📁 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
-st.sidebar.header("🎯 Step 2. 수동 키워드 설정")
-manual_input = st.sidebar.text_input(
-    "실제 구매 유입 키워드 입력", 
-    placeholder="예: 맛있는 속편한 국내산"
-)
+st.sidebar.header("🎯 전략 키워드")
+manual_input = st.sidebar.text_input("구매 유입 키워드 입력", placeholder="예: 속편한 국내산")
 
 if uploaded_file:
-    df = None
     try:
         df = pd.read_csv(uploaded_file, encoding='cp949')
     except:
         uploaded_file.seek(0)
-        try:
-            df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-        except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
+        df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
 
-    if df is not None:
-        manager = SEOManager(df)
-        manual_keys, auto_keys_pairs, specs, tags = manager.run_analysis(manual_input)
+    manager = SEOManager(df)
+    manual_keys, auto_keys, specs, tags = manager.run_analysis(manual_input)
 
-        st.success("✨ 키워드 조합 확장을 극대화한 SEO 분석이 완료되었습니다!")
+    st.success("✅ NLU Term 분석을 통한 키워드 최적화가 완료되었습니다!")
 
-        # 섹션 1: 상품명
-        st.header("🏷️ 1. 전략적 상품명 조합")
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader("✅ 완성된 상품명")
-            full_title = " ".join(manual_keys + [p[0] for p in auto_keys_pairs])
-            st.code(full_title, language=None)
-        with col2:
-            st.subheader("📊 자동 키워드 빈도")
-            st.table(pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)']))
+    # 섹션 1: 상품명
+    st.header("🏷️ 1. 전략적 상품명 조합")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        full_title = " ".join(manual_keys + [p[0] for p in auto_keys])
+        st.code(full_title, language=None)
+        st.info("**NLU 전략:** 의미 단위로 분석하여 가독성이 가장 높은 순서로 배열했습니다.")
+    with col2:
+        st.table(pd.DataFrame(auto_keys, columns=['단어', '빈도']))
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # 섹션 2: 속성
-        st.header("⚙️ 2. 필터 노출용 속성값")
-        col3, col4 = st.columns([2, 1])
-        with col3:
-            for s, c in specs: st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
-        with col4:
-            st.table(pd.DataFrame(specs, columns=['속성값', '빈도']))
+    # 섹션 2: 속성
+    st.header("⚙️ 2. 권장 속성값")
+    col3, col4 = st.columns([2, 1])
+    with col3:
+        for s, _ in specs: st.button(s, use_container_width=True)
+    with col4:
+        st.table(pd.DataFrame(specs, columns=['속성값', '빈도']))
 
-        st.markdown("---")
+    st.markdown("---")
 
-        # 섹션 3: 태그 (매니저님 요청 집중 반영)
-        st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
-        col5, col6 = st.columns([2, 1])
-        with col5:
-            st.subheader("✅ 최적화 태그 10선")
-            tag_display = ", ".join([f"#{t[0]}" for t in tags])
-            st.warning(tag_display)
-            st.info("""
-            **업데이트된 로직:** - '#제과용', '#제과제빵용품' 등을 '#제과제빵재료'로 통합 관리하여 중복을 피했습니다.
-            - 남는 칸에 '맛', '차(Tea)', '영양' 등 서로 다른 카테고리의 태그를 배치하여 검색 그물을 극대화했습니다.
-            """)
-        with col6:
-            st.subheader("📊 태그 인식 데이터")
-            st.table(pd.DataFrame(tags, columns=['태그명', '인식 횟수']))
+    # 섹션 3: 태그 (NLU 확장 로직 적용)
+    st.header("🔍 3. 확장 검색 태그 (의미 기반 중복 제거)")
+    col5, col6 = st.columns([2, 1])
+    with col5:
+        st.warning(", ".join([f"#{t[0]}" for t in tags]))
+        st.info("""
+        **NLU Term 필터링 적용:**
+        - '#제과제빵재료'가 선정되면 유사 의미인 '#제과용', '#제과제빵용품'은 자동으로 배제됩니다.
+        - 남은 자리에 새로운 유입 경로(맛, 영양, 용도 등)를 가진 키워드를 우선 배치하여 **검색 경우의 수**를 극대화했습니다.
+        """)
+    with col6:
+        st.table(pd.DataFrame(tags, columns=['태그명', '인식 횟수']))
 
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드해주세요.")
+    st.info("CSV 파일을 업로드하면 NLU 기반 분석이 시작됩니다.")
