@@ -2,61 +2,81 @@ import streamlit as st
 import pandas as pd
 import re
 from collections import Counter
-import io
 
 # 1. 페이지 설정
-st.set_page_config(page_title="사내 SEO 통합 분석기", layout="wide")
-st.title("🚀 네이버 쇼핑 SEO 통합 최적화 도구")
+st.set_page_config(page_title="네이버 SEO 통합 분석 도구", layout="wide")
+st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
 st.markdown("---")
 
 # 2. 전문 SEO 분석 로직 클래스
 class SEOManager:
     def __init__(self, df):
         self.df = df
-        # 지재권 보호를 위한 필터링 리스트 (추가 가능)
+        # 지재권 보호를 위한 필터링 리스트
         self.exclude_brands = [
             '매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', 
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
             '희창유업', '담터', '연세유업', '매일유업'
         ]
 
-    def split_words(self, text):
+    def split_base_terms(self, text):
+        """복합 명사를 분리하여 기초 단어(Base Term) 추출"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
-        return [w for w in text.split() if len(w) > 1 and w not in self.exclude_brands and not w.isdigit()]
+        raw_words = text.split()
+        
+        terms = []
+        # NLU 분석 시 주요하게 쪼개야 할 키워드
+        sub_splits = ['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량']
+        
+        for word in raw_words:
+            if word in self.exclude_brands or word.isdigit(): continue
+            found_sub = False
+            for sub in sub_splits:
+                if sub in word and word != sub:
+                    terms.append(sub)
+                    rem = word.replace(sub, '').strip()
+                    if len(rem) > 1: terms.append(rem)
+                    found_sub = True
+                    break
+            if not found_sub and len(word) > 1:
+                terms.append(word)
+        return terms
 
     def run_analysis(self):
-        # [A] 상품명 분석 (NLU 기반 핵심 단어)
-        all_names = []
+        # [상품명 분석]
+        name_terms = []
         for name in self.df['상품명']:
-            all_names.extend(self.split_words(name))
-        top_12_names = [w for w, c in Counter(all_names).most_common(12)]
+            name_terms.extend(self.split_base_terms(name))
+        name_counts = Counter(name_terms).most_common(20)
+        top_12_names = [w for w, c in name_counts[:12]]
 
-        # [B] 속성 분석 (스펙 컬럼 데이터 활용)
-        all_specs = []
+        # [속성 분석]
+        spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
                 parts = [p.strip() for p in str(spec).split('|')]
-                all_specs.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
-        top_specs = [w for w, c in Counter(all_specs).most_common(8)]
+                spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
+        spec_counts = Counter(spec_list).most_common(10)
 
-        # [C] 태그 분석 (검색인식태그 및 확장성 고려)
-        all_tags = []
+        # [태그 분석]
+        tag_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
                 parts = [t.strip() for t in str(tags).split(',')]
-                all_tags.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
+                tag_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
-        final_tags = []
-        for t in [w for w, c in Counter(all_tags).most_common(50)]:
-            if len(final_tags) >= 10: break
-            # 상품명과 중복되지 않는 키워드만 선별
+        # 상품명과 중복되지 않는 태그 선별
+        tag_freq = Counter(tag_list).most_common(50)
+        final_tags_with_count = []
+        for t, c in tag_freq:
+            if len(final_tags_with_count) >= 10: break
             if not any(word in t for word in top_12_names):
-                final_tags.append(t)
+                final_tags_with_count.append((t, c))
         
-        return top_12_names, top_specs, final_tags
+        return name_counts[:12], spec_counts[:8], final_tags_with_count
 
-# 3. 사용자 인터페이스(UI) 및 파일 처리
+# 3. 사용자 인터페이스 및 결과 출력
 uploaded_file = st.file_uploader("네이버 쇼핑 분석 결과 CSV 파일을 업로드하세요", type=["csv"])
 
 if uploaded_file:
@@ -74,28 +94,70 @@ if uploaded_file:
         manager = SEOManager(df)
         names, specs, tags = manager.run_analysis()
 
-        st.success("✨ 데이터 분석이 완료되었습니다!")
+        st.success("✨ 분석이 완료되었습니다. 각 항목별 빈도수와 SEO 전략을 확인하세요.")
 
-        # 결과 섹션 1: 상품명 & 태그
-        col1, col2 = st.columns(2)
+        # --- 섹션 1: 상품명 ---
+        st.header("🏷️ 1. 상품명 키워드 (NLU 최적화)")
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.subheader("📝 1. 추천 상품명 (11~12단어)")
-            st.code(" ".join(names), language=None)
-            st.info("**분석 포인트:** 네이버 NLU 엔진이 선호하는 '의미 단위' 빈도수 상위 단어들을 띄어쓰기 형태로 조합했습니다.")
-
+            st.subheader("✅ 추천 상품명 조합")
+            recommended_title = " ".join([n[0] for n in names])
+            st.code(recommended_title, language=None)
+            st.markdown(f"**글자수:** 약 {len(recommended_title)}자 (공백 포함)")
         with col2:
-            st.subheader("🏷️ 2. 확장 검색인식태그 (10개)")
-            st.warning(", ".join([f"#{t}" for t in tags]))
-            st.info("**분석 포인트:** 상품명과 중복되지 않으면서 실제 검색 시 '인식'된 데이터만 선별하여 검색 그물을 넓혔습니다.")
+            st.subheader("📊 단어별 노출 빈도")
+            name_df = pd.DataFrame(names, columns=['단어', '노출횟수'])
+            st.table(name_df)
+        
+        with st.expander("💡 상품명 키워드 배치 전략 설명"):
+            st.write("""
+            - **분석 원리:** 다른 판매자들이 상품명에 가장 많이 사용한 단어들을 '의미 단위(Term)'로 쪼개어 분석했습니다.
+            - **전략:** 네이버 NLU 엔진은 '자판기우유'보다 **'자판기 우유'**와 같이 띄어쓰기된 형태를 더 명확하게 인식하며, 단어의 조합 검색 확률을 높여줍니다.
+            - **주의사항:** 빈도수가 높은 단어를 전면에 배치할수록 클릭률과 검색 연관성 점수가 상승합니다.
+            """)
 
         st.markdown("---")
 
-        # 결과 섹션 2: 속성 키워드
-        st.subheader("⚙️ 3. 권장 속성값 (필터 최적화용)")
-        attr_cols = st.columns(4)
-        for i, s in enumerate(specs):
-            attr_cols[i % 4].button(s, key=f"btn_{i}", use_container_width=True)
-        st.info("**분석 포인트:** 경쟁사들이 '스펙'란에 입력하여 노출 점수를 얻은 실제 속성 데이터입니다. 해당되는 항목을 속성란에 체크하세요.")
+        # --- 섹션 2: 속성 키워드 ---
+        st.header("⚙️ 2. 권장 속성 키워드 (필터 최적화)")
+        col3, col4 = st.columns([2, 1])
+        with col3:
+            st.subheader("✅ 주요 속성값 리스트")
+            st.write("아래 키워드를 스마트스토어 등록 시 **'속성'**란에 검색하여 체크하세요.")
+            for s, c in specs:
+                st.button(f"{s} (검색 인식: {c}회)", key=s)
+        with col4:
+            st.subheader("📊 속성별 빈도 데이터")
+            spec_df = pd.DataFrame(specs, columns=['속성값', '빈도'])
+            st.table(spec_df)
+
+        with st.expander("💡 속성 키워드 활용 전략 설명"):
+            st.write("""
+            - **분석 원리:** 상위 노출 상품들의 '스펙' 항목에 실제로 등록되어 네이버 필터 검색에 잡힌 데이터입니다.
+            - **전략:** 상품명에 단어를 낭비하지 말고, 이 키워드들을 **속성값**으로 입력하세요. 
+            - **효과:** 소비자가 쇼핑 화면 좌측에서 '실온보관', '파우치' 등의 필터를 클릭했을 때 내 상품이 노출되는 핵심 근거가 됩니다.
+            """)
+
+        st.markdown("---")
+
+        # --- 섹션 3: 검색 태그 ---
+        st.header("🔍 3. 확장 검색 태그 (유입 그물망 확장)")
+        col5, col6 = st.columns([2, 1])
+        with col5:
+            st.subheader("✅ 중복 없는 태그 10선")
+            tag_display = ", ".join([f"#{t[0]}" for t in tags])
+            st.info(tag_display)
+        with col6:
+            st.subheader("📊 태그별 빈도 데이터")
+            tag_df = pd.DataFrame(tags, columns=['태그명', '빈도'])
+            st.table(tag_df)
+
+        with st.expander("💡 태그 키워드 확장 전략 설명"):
+            st.write("""
+            - **분석 원리:** 상품명과 속성에 사용된 단어를 제외하고, **태그 사전**에 등록되어 실제 유입을 만들어낸 단어들입니다.
+            - **전략:** 상품명과 겹치지 않는 단어를 태그에 넣어야 검색 그물(Coverage)이 넓어집니다. 
+            - **효과:** '전지분유'를 검색한 사람뿐만 아니라 '홈베이킹재료', '추억의맛'을 검색한 잠재 고객까지 내 상품으로 끌어들입니다.
+            """)
 
 else:
-    st.info("왼쪽 상단의 파일 업로더를 통해 CSV 파일을 업로드해주세요.")
+    st.info("사이드바 또는 중앙의 업로더를 통해 다른 판매자의 상품 분석 CSV 파일을 업로드해주세요.")
