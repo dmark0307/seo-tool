@@ -5,7 +5,7 @@ from collections import Counter
 
 # 1. 페이지 설정 및 디자인
 st.set_page_config(page_title="네이버 SEO NLU 마스터", layout="wide")
-st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
+st.title("🚀 네이버 쇼핑 SEO 통합 최적화 (태그 정밀 카운팅 마스터)")
 st.markdown("---")
 
 # 2. 전문 SEO 분석 로직 클래스
@@ -67,6 +67,7 @@ class SEOManager:
         add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
         fixed_keywords = conversion_keywords + add_keywords
         
+        # [1] 상품명 분석
         name_terms = []
         for name in self.df['상품명']:
             name_terms.extend(self.split_base_terms(name))
@@ -74,13 +75,14 @@ class SEOManager:
         name_freq = Counter(name_terms).most_common(50)
         auto_candidates = []
         for w, c in name_freq:
-            if not any(fixed_w in w or w in fixed_w for fixed_w in fixed_keywords):
+            if not any(fixed_w == w for fixed_w in fixed_keywords): # 완전 일치만 체크
                 auto_candidates.append((w, c))
         
         remain_count = max(0, total_target_count - len(fixed_keywords))
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
+        # [2] 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -88,20 +90,31 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
+        # [3] 태그 분석 - ★ 정밀 카운팅 로직 ★
         tag_raw_list = []
-        for tags in self.df['검색인식태그'].dropna():
-            if tags != '-':
-                parts = [t.strip() for t in str(tags).split(',')]
-                tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
+        for row in self.df['검색인식태그'].dropna():
+            if row != '-':
+                # 콤마로 분리 후 앞뒤 공백을 완벽히 제거하여 원형 보존
+                row_tags = [t.strip() for t in str(row).split(',') if t.strip()]
+                tag_raw_list.extend(row_tags)
         
-        tag_freq = Counter(tag_raw_list).most_common(150)
-        current_title_words = fixed_keywords + [p[0] for p in readable_auto_pairs]
+        # 필터링 전의 실제 '전체 빈도수'를 먼저 계산 (엑셀 카운트와 일치시키기 위함)
+        tag_freq_map = Counter(tag_raw_list)
         
+        current_title_words = set(fixed_keywords + [p[0] for p in readable_auto_pairs])
+        
+        # 선별을 위한 유효 태그 리스트 생성
         valid_candidates = []
-        for t, c in tag_freq:
-            if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
-                valid_candidates.append((t, c))
+        for t, c in tag_freq_map.most_common(200):
+            # 브랜드 및 수치값 제외
+            if any(b in t for b in self.exclude_brands) or any(char.isdigit() for char in t):
+                continue
+            # 상품명에 쓰인 단어와 '완전히 똑같은' 태그만 제외 (부분 일치로 인한 누락 방지)
+            if t in current_title_words:
+                continue
+            valid_candidates.append((t, c))
 
+        # 최종 10선 선별 (유사 의미 그룹핑)
         final_tags = []
         used_roots = set()
         clusters = {'제과': ['제과', '제빵', '베이킹'], '맛': ['맛', '달달', '고소'], '영양': ['영양', '단백질'], '용도': ['자판기', '식자재']}
@@ -117,12 +130,15 @@ class SEOManager:
         for t, c in valid_candidates:
             if len(final_tags) >= 10: break
             if any(t == existing[0] for existing in final_tags): continue
+            
+            # 의미가 완전히 겹치는 경우만 배제
             is_redundant = False
             for ex_t, _ in final_tags:
-                if t in ex_t or ex_t in t:
+                if t == ex_t:
                     is_redundant = True; break
             if not is_redundant: final_tags.append((t, c))
         
+        # 표기를 위해 빈도수 순 정렬
         final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
         return fixed_keywords, readable_auto_pairs, spec_counts, final_tags
@@ -147,6 +163,7 @@ user_exclude_list = [w.strip() for w in exclude_input.split() if len(w.strip()) 
 
 if uploaded_file:
     try:
+        # 데이터 로드 시 인코딩 오류 방지
         df = pd.read_csv(uploaded_file, encoding='cp949')
     except:
         uploaded_file.seek(0)
@@ -155,7 +172,7 @@ if uploaded_file:
     manager = SEOManager(df, user_exclude_list)
     fixed_keys, auto_keys_pairs, specs, tags = manager.run_analysis(conversion_input, add_input, total_kw_count)
 
-    st.success(f"✨ 총 {total_kw_count}개 키워드 타겟팅 분석이 완료되었습니다!")
+    st.success(f"✨ 총 {total_kw_count}개 키워드 정밀 타겟팅 분석이 완료되었습니다!")
 
     # 섹션 1: 상품명
     st.header("🏷️ 1. 전략적 상품명 조합")
@@ -185,16 +202,16 @@ if uploaded_file:
 
     st.markdown("---")
 
-    # 섹션 3: 태그
-    st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
+    # 섹션 3: 태그 (정밀 카운팅 결과)
+    st.header("🔍 3. 확장 검색 태그 (정확한 사용빈도 측정)")
     col5, col6 = st.columns([2, 1])
     with col5:
         st.subheader("✅ 최적화 태그 10선")
         tag_display = ", ".join([f"#{t[0]}" for t in tags])
         st.warning(tag_display)
+        st.info("**정밀 업데이트:** 엑셀의 '검색인식태그' 열에서 태그명이 정확히 일치하는 횟수만 카운팅합니다. (공백 무시 및 부분 일치 필터링 배제)")
     with col6:
-        # ★ [수정 완료] 명칭 변경: 인식 횟수 -> 사용 빈도수
-        st.subheader("📊 태그 인식 데이터")
+        st.subheader("📊 태그 사용 빈도수")
         tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
         tag_df.index = tag_df.index + 1
         st.table(tag_df)
