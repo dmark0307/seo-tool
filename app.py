@@ -3,8 +3,25 @@ import pandas as pd
 import re
 from collections import Counter
 
-# 1. 페이지 설정 및 디자인
+# 1. 페이지 설정 및 디자인 최적화
 st.set_page_config(page_title="네이버 SEO NLU 마스터", layout="wide")
+
+# 사이드바 간격 최적화를 위한 커스텀 CSS
+st.markdown("""
+    <style>
+    [data-testid="stSidebar"] {
+        min-width: 320px;
+        max-width: 320px;
+    }
+    [data-testid="stSidebar"] .stElementContainer {
+        margin-bottom: -15px; /* 위젯 간 간격 축소 */
+    }
+    .block-container {
+        padding-top: 2rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
 st.markdown("---")
 
@@ -43,8 +60,7 @@ class SEOManager:
             for rk in raw_keywords:
                 if rk != '-': extracted.extend(self.split_base_terms(rk))
             return list(dict.fromkeys(extracted))[:5]
-        except:
-            return []
+        except: return []
 
     def reorder_for_readability(self, word_count_pairs):
         identity, form, usage, desc = ['전지', '분유', '우유', '탈지'], ['분말', '가루', '스틱', '액상'], ['자판기', '업소용', '대용량', '식자재'], ['진한', '고소한', '맛있는', '추억']
@@ -73,7 +89,6 @@ class SEOManager:
         selected_auto = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability([(w, Counter(name_terms)[w]) for w in selected_auto])
         
-        # 2. 필터 노출용 속성값 분석 (로직 유지)
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -85,7 +100,6 @@ class SEOManager:
 
         title_keywords = set(fixed_keywords + [p[0] for p in readable_auto_pairs])
 
-        # 3. 확장 검색 태그 분석 (로직 유지)
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
@@ -102,11 +116,7 @@ class SEOManager:
         final_tags, selected_subterms = [], set()
         for i, (t_raw, c) in enumerate(candidates):
             if len(final_tags) >= 10: break
-            is_shorter_redundant = False
-            for j, (other_t, other_c) in enumerate(candidates):
-                if i != j and t_raw in other_t and len(t_raw) < len(other_t):
-                    is_shorter_redundant = True; break
-            if is_shorter_redundant: continue
+            if any(t_raw in other_t and len(t_raw) < len(other_t) for other_t, _ in candidates): continue
             prefix = t_raw[:3] if len(t_raw) > 3 else t_raw[:2]
             if any(prefix in ex_t or ex_t[:3] in t_raw for ex_t, _ in final_tags): continue
             t_subterms = self.split_base_terms(t_raw)
@@ -121,17 +131,22 @@ def calculate_seo_metrics(text):
     except: b_len = len(text.encode('utf-8'))
     return c_len, b_len
 
-# 3. GUI 구성
-st.sidebar.header("📁 Step 1. 데이터 업로드")
-uploaded_file = st.sidebar.file_uploader("1️⃣ 분석용 상품 데이터 (CSV)", type=["csv"])
-stats_file = st.sidebar.file_uploader("2️⃣ 판매분석 통계 데이터 (CSV/Excel)", type=["csv", "xlsx"])
-target_code = st.sidebar.text_input("🎯 최적화할 상품코드 입력", placeholder="예: 123456789")
+# --- 3. 사이드바 UI 최적화 구성 ---
+with st.sidebar:
+    st.subheader("⚙️ 분석 설정")
+    
+    # 익스펜더를 활용하여 높이 조절
+    with st.expander("📁 1. 데이터 소스", expanded=True):
+        uploaded_file = st.file_uploader("상품 데이터(CSV)", type=["csv"])
+        stats_file = st.file_uploader("판매분석 통계(Excel/CSV)", type=["csv", "xlsx"])
+        target_code = st.text_input("🎯 최적화 상품코드", placeholder="상품코드 입력")
 
-st.sidebar.header("🎯 Step 2. 전략 설정")
-conversion_input = st.sidebar.text_input("구매전환 키워드 (추가)", placeholder="통계 외 추가할 키워드")
-add_input = st.sidebar.text_input("추가할 키워드")
-total_kw_count = st.sidebar.number_input("상품명 목표 키워드 수", min_value=5, max_value=25, value=11)
+    with st.expander("🎯 2. 전략 설정", expanded=True):
+        conversion_input = st.text_input("구매전환 키워드 추가", placeholder="통계 외 추가 단어")
+        add_input = st.text_input("고정 배치 키워드", placeholder="무료배송 등")
+        total_kw_count = st.number_input("목표 키워드 수", min_value=5, max_value=25, value=11)
 
+# --- 메인 로직 실행 ---
 if uploaded_file:
     try:
         uploaded_file.seek(0)
@@ -150,19 +165,14 @@ if uploaded_file:
                 try: stats_df = pd.read_csv(stats_file, encoding='cp949')
                 except: stats_df = pd.read_csv(stats_file, encoding='utf-8-sig')
             else:
-                # 엑셀 엔진을 openpyxl로 명시하여 에러 방지
                 stats_df = pd.read_excel(stats_file, engine='openpyxl')
             stats_kws = manager.extract_stats_keywords(stats_df, target_code)
-            if stats_kws: st.sidebar.success(f"✔️ 키워드 추출 완료!")
-            else: st.sidebar.warning("매칭되는 데이터가 없습니다.")
-        except Exception as e:
-            st.sidebar.error(f"통계 분석 오류: {e}\n(requirements.txt에 openpyxl이 있는지 확인하세요)")
+            if stats_kws: st.sidebar.success("✔️ 통계 키워드 매칭 완료")
+        except: st.sidebar.error("통계 분석 오류(부품확인)")
 
     fixed, auto, specs, tags = manager.run_analysis(stats_kws, conversion_input, add_input, total_kw_count)
 
-    st.success("✨ 판매 통계 매칭 분석이 완료되었습니다!")
-
-    # 1. 전략적 상품명 조합
+    # 1. 전략적 상품명 조합 (출력 유지)
     st.header("🏷️ 1. 전략적 상품명 조합")
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -178,7 +188,7 @@ if uploaded_file:
         st.table(pd.DataFrame(auto, columns=['단어', '빈도']).assign(No=range(1, len(auto)+1)).set_index('No'))
 
     st.markdown("---")
-    # 2. 필터 노출용 속성값 (변동 없음)
+    # 2. 필터 노출용 속성값 (로직 및 출력 유지)
     st.header("⚙️ 2. 필터 노출용 속성값")
     col3, col4 = st.columns([2, 1])
     with col3:
@@ -187,7 +197,7 @@ if uploaded_file:
         st.table(pd.DataFrame(specs, columns=['속성값', '빈도']).set_index(pd.Index(range(1, len(specs)+1))))
 
     st.markdown("---")
-    # 3. 확장 검색 태그 (변동 없음)
+    # 3. 확장 검색 태그 (로직 및 출력 유지)
     st.header("🔍 3. 확장 검색 태그 (조합 효율 극대화)")
     col5, col6 = st.columns([2, 1])
     with col5:
@@ -196,8 +206,6 @@ if uploaded_file:
         st.caption("※ 짧은 단어보다 정보량이 풍부한 조합 키워드를 우선 선택하여 검색 노출을 확장했습니다.")
     with col6:
         st.subheader("📊 태그 사용 빈도수")
-        tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
-        tag_df.index += 1
-        st.table(tag_df)
+        st.table(pd.DataFrame(tags, columns=['태그명', '사용 빈도수']).assign(No=range(1, len(tags)+1)).set_index('No'))
 else:
-    st.info("파일을 업로드해주세요.")
+    st.info("좌측 메뉴에서 파일을 업로드하고 설정을 마쳐주세요.")
