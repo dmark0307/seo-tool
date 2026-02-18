@@ -31,7 +31,7 @@ class SEOManager:
         self.sub_splits = sorted(['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량', '멸균', '파우치', '추억', '간식', '재료'], key=len, reverse=True)
 
     def split_base_terms(self, text, is_manual=False):
-        """NLU 규칙에 따라 복합 명사를 분리 (is_manual=True일 경우 입력 키워드 보존 강화)"""
+        """NLU 규칙에 따라 복합 명사를 분리 (수동 입력 보존 로직 강화)"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
@@ -40,14 +40,12 @@ class SEOManager:
         
         for word in raw_words:
             if word in self.exclude_brands: continue
-            # 수동 입력의 경우 숫자가 포함되어도 보존 (예: 1kg, 2개 등 전략적 노출 대응)
             if not is_manual and any(char.isdigit() for char in word): continue
             
             parts = re.split(pattern, word)
             for p in parts:
                 p = p.strip()
                 if not p or p in self.exclude_brands: continue
-                # 수동 입력은 1글자 단어도 반영, 자동 추출은 2글자 이상만
                 if is_manual or len(p) > 1 or p in self.sub_splits:
                     terms.append(p)
         return terms
@@ -79,15 +77,21 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, stats_keywords, conversion_input, add_input, total_target_count):
-        # 1. 입력 키워드 분리 (수동 입력 모드 활성화)
+        # 1. 입력 키워드 분리 (수동 입력 모드)
         manual_conv = self.split_base_terms(conversion_input, is_manual=True)
         manual_add = self.split_base_terms(add_input, is_manual=True)
         
-        # 2. 고정 키워드 리스트 생성 (순서: 통계 -> 수동 전환 -> 고정 배치)
+        # 2. 고정 키워드 리스트 생성 (배치 순서: 통계 -> 고정 배치 -> 구매전환 추가)
         fixed_keywords = []
-        for k in (stats_keywords + manual_conv + manual_add):
-            if k not in fixed_keywords:
-                fixed_keywords.append(k)
+        # (1) 통계 반영 키워드
+        for k in stats_keywords:
+            if k not in fixed_keywords: fixed_keywords.append(k)
+        # (2) 고정 배치 키워드 (📌 고정 배치)
+        for k in manual_add:
+            if k not in fixed_keywords: fixed_keywords.append(k)
+        # (3) 구매전환 추가 키워드 (➕ 구매전환 추가)
+        for k in manual_conv:
+            if k not in fixed_keywords: fixed_keywords.append(k)
         
         # 3. 상품명 자동 추출 키워드
         name_terms = []
@@ -149,8 +153,8 @@ with st.sidebar:
         target_code = st.text_input("🎯 코드", placeholder="상품코드 입력")
 
     with st.expander("🎯 2. 전략 설정", expanded=True):
-        conversion_input = st.text_input("➕ 구매전환 추가", placeholder="통계 외 단어")
-        add_input = st.text_input("📌 고정 배치", placeholder="무료배송 등")
+        conversion_input = st.text_input("➕ 구매전환 추가", placeholder="예: 맛있는 우유")
+        add_input = st.text_input("📌 고정 배치", placeholder="예: 무료배송")
         total_kw_count = st.number_input("🔢 목표 키워드 수", min_value=5, value=11)
 
 if uploaded_file:
@@ -192,24 +196,12 @@ if uploaded_file:
         st.table(pd.DataFrame(auto, columns=['단어', '빈도']).assign(No=range(1, len(auto)+1)).set_index('No'))
 
     st.markdown("---")
-    # 2. 필터 노출용 속성값 (로직 및 출력 유지)
-    st.header("⚙️ 2. 필터 노출용 속성값")
-    col3, col4 = st.columns([2, 1])
-    with col3:
-        for s, _ in specs: st.button(s, key=f"attr_{s}", use_container_width=True)
-    with col4:
-        st.table(pd.DataFrame(specs, columns=['속성값', '빈도']).set_index(pd.Index(range(1, len(specs)+1))))
-
-    st.markdown("---")
-    # 3. 확장 검색 태그 (로직 및 출력 유지)
-    st.header("🔍 3. 확장 검색 태그 (조합 효율 극대화)")
-    col5, col6 = st.columns([2, 1])
-    with col5:
-        st.subheader("✅ 최적화 태그 10선")
+    # 2 & 3번 섹션 (로직 및 출력 유지)
+    st.header("⚙️ 2. 필터 속성 & 🔍 3. 확장 태그")
+    l_col, r_col = st.columns(2)
+    with l_col:
+        for s_name, _ in specs: st.button(s_name, use_container_width=True, key=f"at_{s_name}")
+    with r_col:
         st.success(", ".join([f"#{t[0]}" for t in tags]))
-        st.caption("※ 짧은 단어보다 정보량이 풍부한 조합 키워드를 우선 선택하여 검색 노출을 확장했습니다.")
-    with col6:
-        st.subheader("📊 태그 사용 빈도수")
-        st.table(pd.DataFrame(tags, columns=['태그명', '사용 빈도수']).assign(No=range(1, len(tags)+1)).set_index('No'))
 else:
-    st.info("좌측 메뉴에서 파일을 업로드해주세요.")
+    st.info("좌측 메뉴에서 상품 데이터를 업로드해주세요.")
