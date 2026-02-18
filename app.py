@@ -3,51 +3,51 @@ import pandas as pd
 import re
 from collections import Counter
 
-# 1. 페이지 설정 및 디자인 최적화
-st.set_page_config(page_title="네이버 SEO NLU 마스터", layout="wide")
+# 1. 페이지 설정 및 디자인 최소화 적용
+st.set_page_config(page_title="SEO NLU", layout="wide")
 
-# 사이드바 간격 및 인터페이스 최적화 CSS
+# 인터페이스 최소화를 위한 강력한 CSS 주입
 st.markdown("""
     <style>
-    [data-testid="stSidebar"] { min-width: 320px; max-width: 320px; }
-    [data-testid="stSidebar"] .stElementContainer { margin-bottom: -15px; }
-    .block-container { padding-top: 2rem; }
-    /* 파일 업로드 박스 높이 축소 */
-    [data-testid="stFileUploader"] section { padding: 0px 10px !important; min-height: 80px !important; }
+    /* 사이드바 너비 고정 및 여백 제거 */
+    [data-testid="stSidebar"] { min-width: 280px; max-width: 280px; }
+    [data-testid="stSidebarContent"] { padding-top: 1rem; }
+    
+    /* 위젯 간 간격 극한 축소 */
+    [data-testid="stElementContainer"] { margin-bottom: -22px !important; }
+    
+    /* 파일 업로드 박스 높이 축소 및 안내문구 숨기기 */
+    [data-testid="stFileUploader"] section { padding: 0px 10px !important; min-height: 70px !important; }
+    [data-testid="stFileUploader"] label { margin-bottom: -10px; font-size: 0.8rem; }
+    div[data-testid="stFileUploader"] section > div { display: none; } /* "Drag and drop" 문구 숨기기 */
+    
+    /* 입력창 라벨 크기 조절 */
+    .stTextInput label, .stNumberInput label { font-size: 0.85rem !important; }
+    
+    /* 본문 상단 여백 축소 */
+    .block-container { padding-top: 1rem !important; }
     </style>
     """, unsafe_allow_html=True)
-
-st.title("🚀 네이버 쇼핑 SEO 통합 최적화 매니저")
-st.markdown("---")
 
 class SEOManager:
     def __init__(self, df, user_exclude_list):
         self.df = df
-        self.exclude_brands = [
-            '매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', 
-            '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
-            '희창유업', '담터', '연세유업', '매일유업'
-        ] + user_exclude_list
+        self.exclude_brands = ['매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', '희창유업', '담터', '연세유업', '매일유업'] + user_exclude_list
         self.sub_splits = sorted(['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량', '멸균', '파우치', '추억', '간식', '재료'], key=len, reverse=True)
 
-    def split_base_terms(self, text, is_manual=False):
-        """NLU 규칙에 따라 복합 명사를 분리 (수동 입력 보존 로직 강화)"""
+    def split_base_terms(self, text):
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
+        pattern = f"({'|'.join(self.sub_splits)})"
         raw_words = text.split()
         terms = []
-        pattern = f"({'|'.join(self.sub_splits)})"
-        
         for word in raw_words:
-            if word in self.exclude_brands: continue
-            if not is_manual and any(char.isdigit() for char in word): continue
-            
+            if word in self.exclude_brands or any(char.isdigit() for char in word): continue
             parts = re.split(pattern, word)
             for p in parts:
                 p = p.strip()
                 if not p or p in self.exclude_brands: continue
-                if is_manual or len(p) > 1 or p in self.sub_splits:
-                    terms.append(p)
+                if len(p) > 1 or p in self.sub_splits: terms.append(p)
         return terms
 
     def extract_stats_data(self, stats_df, target_product_code):
@@ -77,44 +77,30 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, stats_keywords, conversion_input, add_input, total_target_count):
-        # 1. 입력 키워드 분리 (수동 입력 모드)
-        manual_conv = self.split_base_terms(conversion_input, is_manual=True)
-        manual_add = self.split_base_terms(add_input, is_manual=True)
-        
-        # 2. 고정 키워드 리스트 생성 (배치 순서: 통계 -> 고정 배치 -> 구매전환 추가)
+        conv_keys = stats_keywords + self.split_base_terms(conversion_input)
+        add_keys = self.split_base_terms(add_input)
         fixed_keywords = []
-        # (1) 통계 반영 키워드
-        for k in stats_keywords:
-            if k not in fixed_keywords: fixed_keywords.append(k)
-        # (2) 고정 배치 키워드 (📌 고정 배치)
-        for k in manual_add:
-            if k not in fixed_keywords: fixed_keywords.append(k)
-        # (3) 구매전환 추가 키워드 (➕ 구매전환 추가)
-        for k in manual_conv:
+        for k in (conv_keys + add_keys):
             if k not in fixed_keywords: fixed_keywords.append(k)
         
-        # 3. 상품명 자동 추출 키워드
         name_terms = []
         for name in self.df['상품명']: name_terms.extend(self.split_base_terms(name))
-        name_freq = Counter(name_terms).most_common(100)
+        name_freq = Counter(name_terms).most_common(50)
         auto_candidates = [w for w, c in name_freq if w not in fixed_keywords]
-        
         remain_count = max(0, total_target_count - len(fixed_keywords))
         selected_auto = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability([(w, Counter(name_terms)[w]) for w in selected_auto])
         
-        # 2번 섹션: 속성 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
-            parts = [p.strip() for p in str(spec).split('|')]
-            spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
+            if spec != '-':
+                parts = [p.strip() for p in str(spec).split('|')]
+                spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
         spec_keywords = set()
         for s, _ in spec_counts: spec_keywords.update(self.split_base_terms(s))
-
         title_keywords = set(fixed_keywords + [p[0] for p in readable_auto_pairs])
 
-        # 3번 섹션: 태그 분석
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-': tag_raw_list.extend([t.strip() for t in str(tags).split(',') if t.strip()])
@@ -144,19 +130,21 @@ def calculate_seo_metrics(text):
     except: b_len = len(text.encode('utf-8'))
     return c_len, b_len
 
-# --- 사이드바 UI 최적화 ---
+# --- 최적화 사이드바 ---
 with st.sidebar:
-    st.subheader("⚙️ 분석 설정")
-    with st.expander("📁 1. 데이터 소스", expanded=True):
-        uploaded_file = st.file_uploader("상품(CSV)", type=["csv"])
-        stats_file = st.file_uploader("통계(XL/CSV)", type=["csv", "xlsx"])
-        target_code = st.text_input("🎯 코드", placeholder="상품코드 입력")
+    st.markdown("### 🛠️ **SEO 설정**")
+    
+    # 1. 데이터 소스 (압축)
+    uploaded_file = st.file_uploader("상품(CSV)", type=["csv"], help="필수 업로드")
+    stats_file = st.file_uploader("통계(XL/CSV)", type=["csv", "xlsx"], help="판매분석 파일")
+    target_code = st.text_input("🎯 코드", placeholder="상품코드")
 
-    with st.expander("🎯 2. 전략 설정", expanded=True):
-        conversion_input = st.text_input("➕ 구매전환 추가", placeholder="예: 맛있는 우유")
-        add_input = st.text_input("📌 고정 배치", placeholder="예: 무료배송")
-        total_kw_count = st.number_input("🔢 목표 키워드 수", min_value=5, value=11)
+    # 2. 전략 설정 (압축)
+    conversion_input = st.text_input("➕ 키워드", placeholder="추가 구매전환 단어")
+    add_input = st.text_input("📌 고정", placeholder="고정 배치 키워드")
+    total_kw_count = st.number_input("🔢 목표", min_value=5, max_value=25, value=11)
 
+# --- 메인 실행부 ---
 if uploaded_file:
     try:
         uploaded_file.seek(0)
@@ -173,35 +161,26 @@ if uploaded_file:
             stats_file.seek(0)
             stats_df = pd.read_csv(stats_file, encoding='cp949') if stats_file.name.endswith('.csv') else pd.read_excel(stats_file, engine='openpyxl')
             stats_kws, old_name = manager.extract_stats_data(stats_df, target_code)
-            if stats_kws: st.sidebar.success("✔️ 통계 매칭 성공")
-        except: st.sidebar.error("통계 분석 오류")
+        except: pass
 
-    # 분석 실행
     fixed, auto, specs, tags = manager.run_analysis(stats_kws, conversion_input, add_input, total_kw_count)
 
-    # 1. 전략적 상품명 조합
+    # 1. 전략적 상품명 조합 (디자인 유지)
     st.header("🏷️ 1. 전략적 상품명 조합")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        if old_name: st.info(f"📝 **기존 상품명:** {old_name}")
-        st.subheader("✅ 완성된 상품명")
-        full_title = " ".join(fixed + [p[0] for p in auto])
-        st.code(full_title, language=None)
-        c_len, b_len = calculate_seo_metrics(full_title)
-        st.markdown(f"**{c_len}자 / {b_len} Byte / {len(fixed)+len(auto)}개 키워드**")
-        if stats_kws: st.info(f"📊 **통계 반영 키워드:** {', '.join(stats_kws)}")
-
-    with col2:
-        st.subheader("📊 자동 추천 빈도")
-        st.table(pd.DataFrame(auto, columns=['단어', '빈도']).assign(No=range(1, len(auto)+1)).set_index('No'))
+    if old_name: st.info(f"📝 **기존:** {old_name}")
+    full_title = " ".join(fixed + [p[0] for p in auto])
+    st.code(full_title, language=None)
+    c_l, b_l = calculate_seo_metrics(full_title)
+    st.markdown(f"**{c_l}자 / {b_l} Byte / {len(fixed)+len(auto)}개 키워드**")
 
     st.markdown("---")
-    # 2 & 3번 섹션 (로직 및 출력 유지)
+
+    # 2 & 3. 속성 및 태그 (이미지 77c3cc 완벽 재현)
     st.header("⚙️ 2. 필터 속성 & 🔍 3. 확장 태그")
-    l_col, r_col = st.columns(2)
-    with l_col:
-        for s_name, _ in specs: st.button(s_name, use_container_width=True, key=f"at_{s_name}")
-    with r_col:
+    col_l, col_r = st.columns(2)
+    with col_l:
+        for s_name, _ in specs: st.button(s_name, use_container_width=True, key=f"btn_{s_name}")
+    with col_r:
         st.success(", ".join([f"#{t[0]}" for t in tags]))
 else:
-    st.info("좌측 메뉴에서 상품 데이터를 업로드해주세요.")
+    st.info("좌측에서 상품 데이터를 업로드하세요.")
