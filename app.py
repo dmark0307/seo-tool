@@ -19,7 +19,9 @@ class SEOManager:
         ] + user_exclude_list
 
     def split_base_terms(self, text):
+        """NLU 규칙에 따른 복합 명사 분리 및 정제 로직"""
         if pd.isna(text) or text == '-': return []
+        # 특수문자 제거
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
         
@@ -27,6 +29,7 @@ class SEOManager:
         sub_splits = ['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량']
         
         for word in raw_words:
+            # 브랜드명 및 숫자 포함 단어 제외 (필요 시 이 로직을 입력값에는 완화할 수 있음)
             if word in self.exclude_brands or any(char.isdigit() for char in word):
                 continue
             
@@ -59,8 +62,9 @@ class SEOManager:
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, conversion_input, add_input, total_target_count):
-        conv_keys = [w.strip() for w in conversion_input.split() if len(w.strip()) > 0]
-        add_keys = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
+        # --- 수정 포인트: 입력 키워드에도 NLU 분리 로직 적용 ---
+        conv_keys = self.split_base_terms(conversion_input)
+        add_keys = self.split_base_terms(add_input)
         fixed_keywords = conv_keys + add_keys
         
         name_terms = []
@@ -124,7 +128,7 @@ class SEOManager:
                 final_tags.append((t, c))
                 selected_set.add(t)
 
-        return fixed_keywords, readable_auto_pairs, spec_counts, sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
+        return fixed_keywords, readable_auto_pairs, spec_counts, sorted(final_tags, key=lambda x: x[1], reverse=True)[:10], conv_keys
 
 def calculate_seo_metrics(text):
     char_count = len(text)
@@ -154,7 +158,8 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
 
     manager = SEOManager(df, user_exclude_list)
-    fixed, auto, specs, tags = manager.run_analysis(conversion_input, add_input, total_kw_count)
+    # 분석 실행 (수정된 리턴값 반영)
+    fixed, auto, specs, tags, conv_only = manager.run_analysis(conversion_input, add_input, total_kw_count)
 
     st.success("✨ SEO 최적화 분석이 완료되었습니다!")
 
@@ -166,15 +171,12 @@ if uploaded_file:
         full_title = " ".join(fixed + [p[0] for p in auto])
         st.code(full_title, language=None)
         
-        # --- 수정 포인트: 총 키워드 수 계산 ---
         total_used_kw = len(fixed) + len(auto)
         c_len, b_len = calculate_seo_metrics(full_title)
         
         if c_len <= 50:
-            # 정상 케이스 출력 업데이트
             st.markdown(f"🟢 **정상**: {c_len}자 / {b_len} Byte / {total_used_kw}개 키워드")
         else:
-            # 주의 케이스 출력 업데이트
             st.markdown(f"🔴 **주의**: {c_len}자 ({c_len-50}자 초과) / {b_len} Byte / {total_used_kw}개 키워드")
             st.warning("상품명이 50자를 초과하면 검색 결과에서 생략될 수 있습니다.")
             
