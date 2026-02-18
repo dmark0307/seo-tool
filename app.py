@@ -50,17 +50,31 @@ class SEOManager:
                 if len(p) > 1 or p in self.sub_splits: terms.append(p)
         return terms
 
-    def extract_stats_keywords(self, stats_df, target_product_code):
+    def extract_stats_data(self, stats_df, target_product_code):
+        """통계 데이터에서 특정 상품코드의 결제 키워드와 기존 상품명 추출"""
         try:
+            # 컬럼명 유연하게 감지
             code_col = [c for c in stats_df.columns if any(x in c for x in ['번호', 'ID', '코드'])][0]
             kw_col = [c for c in stats_df.columns if '키워드' in c][0]
+            name_col = [c for c in stats_df.columns if '상품명' in c][0]
+            
             filtered_df = stats_df[stats_df[code_col].astype(str) == str(target_product_code)]
+            
+            if filtered_df.empty:
+                return [], ""
+
+            # 기존 상품명 추출
+            existing_name = str(filtered_df[name_col].iloc[0])
+            
+            # 검색키워드 추출 및 정제
             raw_keywords = filtered_df[kw_col].dropna().unique().tolist()
             extracted = []
             for rk in raw_keywords:
                 if rk != '-': extracted.extend(self.split_base_terms(rk))
-            return list(dict.fromkeys(extracted))[:5]
-        except: return []
+            
+            return list(dict.fromkeys(extracted))[:5], existing_name
+        except:
+            return [], ""
 
     def reorder_for_readability(self, word_count_pairs):
         identity, form, usage, desc = ['전지', '분유', '우유', '탈지'], ['분말', '가루', '스틱', '액상'], ['자판기', '업소용', '대용량', '식자재'], ['진한', '고소한', '맛있는', '추억']
@@ -134,8 +148,6 @@ def calculate_seo_metrics(text):
 # --- 3. 사이드바 UI 최적화 구성 ---
 with st.sidebar:
     st.subheader("⚙️ 분석 설정")
-    
-    # 익스펜더를 활용하여 높이 조절
     with st.expander("📁 1. 데이터 소스", expanded=True):
         uploaded_file = st.file_uploader("상품 데이터(CSV)", type=["csv"])
         stats_file = st.file_uploader("판매분석 통계(Excel/CSV)", type=["csv", "xlsx"])
@@ -158,6 +170,8 @@ if uploaded_file:
     manager = SEOManager(df, [])
     
     stats_kws = []
+    old_name = "" # 기존 상품명을 담을 변수 초기화
+    
     if stats_file and target_code:
         try:
             stats_file.seek(0)
@@ -166,21 +180,29 @@ if uploaded_file:
                 except: stats_df = pd.read_csv(stats_file, encoding='utf-8-sig')
             else:
                 stats_df = pd.read_excel(stats_file, engine='openpyxl')
-            stats_kws = manager.extract_stats_keywords(stats_df, target_code)
-            if stats_kws: st.sidebar.success("✔️ 통계 키워드 매칭 완료")
-        except: st.sidebar.error("통계 분석 오류(부품확인)")
+            
+            # 키워드와 상품명을 동시에 추출
+            stats_kws, old_name = manager.extract_stats_data(stats_df, target_code)
+            
+            if stats_kws: st.sidebar.success("✔️ 통계 데이터 매칭 성공")
+        except: st.sidebar.error("통계 분석 오류(오픈피와이엑셀 확인)")
 
     fixed, auto, specs, tags = manager.run_analysis(stats_kws, conversion_input, add_input, total_kw_count)
 
-    # 1. 전략적 상품명 조합 (출력 유지)
+    # 1. 전략적 상품명 조합 (개선된 출력)
     st.header("🏷️ 1. 전략적 상품명 조합")
     col1, col2 = st.columns([2, 1])
     with col1:
+        # [신규 기능] 기존 상품명 표시
+        if old_name:
+            st.info(f"📝 **기존 상품명:** {old_name}")
+            
         st.subheader("✅ 완성된 상품명")
         full_title = " ".join(fixed + [p[0] for p in auto])
         st.code(full_title, language=None)
+        
         c_len, b_len = calculate_seo_metrics(full_title)
-        st.markdown(f"{'🟢 정상' if c_len <= 50 else '🔴 주의'}: **{c_len}자 / {b_len} Byte / {len(fixed)+len(auto)}개 키워드**")
+        st.markdown(f"**{c_len}자 / {b_len} Byte / {len(fixed)+len(auto)}개 키워드**")
         if stats_kws: st.info(f"📊 **통계 반영 키워드:** {', '.join(stats_kws)}")
 
     with col2:
