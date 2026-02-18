@@ -17,8 +17,8 @@ class SEOManager:
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
             '희창유업', '담터', '연세유업', '매일유업'
         ] + user_exclude_list
-        # NLU 분리 기준 핵심 단어
-        self.sub_splits = sorted(['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량', '멸균', '파우치'], key=len, reverse=True)
+        # NLU 분리 기준 핵심 단어 (확장성 체크를 위해 '추억', '간식' 등 추가)
+        self.sub_splits = sorted(['자판기', '우유', '분유', '가루', '분말', '전지', '탈지', '스틱', '업소용', '대용량', '멸균', '파우치', '추억', '간식', '재료'], key=len, reverse=True)
 
     def split_base_terms(self, text):
         """NLU 규칙에 따라 복합 명사를 자동으로 분리하는 엔진"""
@@ -69,52 +69,63 @@ class SEOManager:
         selected_auto = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability([(w, Counter(name_terms)[w]) for w in selected_auto])
         
-        # 3. 속성(스펙) 분석 및 키워드 추출
+        # 3. 속성(스펙) 분석 (로직 및 출력 유지)
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
                 parts = [p.strip() for p in str(spec).split('|')]
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
-        spec_keywords = set([s[0] for s in spec_counts]) # 속성에서 사용된 키워드 집합
+        # 속성에서 사용된 개별 키워드 추출
+        spec_keywords = set()
+        for s, _ in spec_counts:
+            spec_keywords.update(self.split_base_terms(s))
 
         # 4. 상품명에 사용된 전체 키워드 집합
         title_keywords = set(fixed_keywords + [p[0] for p in readable_auto_pairs])
 
-        # 5. 확장 검색 태그 분석 (분해 및 비교 로직 강화)
+        # 5. 확장 검색 태그 분석 (확장성 극대화 업그레이드)
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
                 tag_raw_list.extend([t.strip() for t in str(tags).split(',') if t.strip()])
         
-        tag_freq = Counter(tag_raw_list).most_common(200)
+        tag_freq = Counter(tag_raw_list).most_common(300)
         
         final_tags = []
-        selected_tag_subterms = set() # 이미 선택된 태그의 분해 키워드들
+        # 이미 선점된 태그의 '의미적 조각'들 (중복 차단용)
+        master_keyword_pool = title_keywords.union(spec_keywords)
 
         for t_raw, c in tag_freq:
             if len(final_tags) >= 10: break
             
-            # 태그를 NLU 규칙으로 분해 (예: "맛있는자판기우유" -> ["맛있는", "자판기", "우유"])
+            # 태그를 NLU 단위로 분해
             t_subterms = self.split_base_terms(t_raw)
-            if not t_subterms: continue
+            if not t_subterms:
+                if len(t_raw) > 1: t_subterms = [t_raw]
+                else: continue
             
-            # [3중 중복 검사] 
-            # 1. 상품명 키워드와 겹치는가? 2. 속성(스펙) 키워드와 겹치는가? 3. 이미 뽑힌 태그 키워드와 겹치는가?
+            # [지능형 중복 검사]
             is_redundant = False
-            for sub in t_subterms:
-                if sub in title_keywords or sub in spec_keywords or sub in selected_tag_subterms:
-                    is_redundant = True
-                    break
             
-            # 숫자 포함 여부 체크
+            # (1) 기존 키워드 풀(상품명/속성/기선택 태그)과 조각 단어가 겹치는지 체크
+            for sub in t_subterms:
+                if sub in master_keyword_pool:
+                    is_redundant = True; break
+            
+            # (2) 문자열 포함 관계 체크 (예: #제과제빵 vs #제과제빵재료)
+            if not is_redundant:
+                for existing_t, _ in final_tags:
+                    if t_raw in existing_t or existing_t in t_raw:
+                        is_redundant = True; break
+
+            # (3) 숫자 포함 제외
             if any(char.isdigit() for char in t_raw): is_redundant = True
 
             if not is_redundant:
-                # 조합 확장성(Subsumption) 체크: 현재 태그가 다른 후보를 포함하는 긴 단어인지 확인
-                # (이미 빈도순 정렬이므로 정보량이 풍부한 것을 우선 선택)
                 final_tags.append((t_raw, c))
-                for sub in t_subterms: selected_tag_subterms.add(sub)
+                # 뽑힌 태그의 모든 조각 단어를 풀에 추가하여 이후 유사 단어 차단
+                for sub in t_subterms: master_keyword_pool.add(sub)
 
         return fixed_keywords, readable_auto_pairs, spec_counts, sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
 
@@ -144,7 +155,7 @@ if uploaded_file:
 
     st.success("✨ NLU 기반 정밀 분석이 완료되었습니다!")
 
-    # 섹션 1: 상품명
+    # 섹션 1: 상품명 (변동 없음)
     st.header("🏷️ 1. 전략적 상품명 조합")
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -160,7 +171,7 @@ if uploaded_file:
 
     st.markdown("---")
 
-    # 섹션 2: 속성 (유지)
+    # 섹션 2: 속성 (로직 및 출력 유지)
     st.header("⚙️ 2. 필터 노출용 속성값")
     col3, col4 = st.columns([2, 1])
     with col3:
@@ -170,14 +181,14 @@ if uploaded_file:
 
     st.markdown("---")
 
-    # 섹션 3: 태그 (NLU 분해 및 3중 대조 로직 적용)
+    # 섹션 3: 태그 (업그레이드된 로직 적용)
     st.header("🔍 3. 확장 검색 태그 (조합 효율 극대화)")
     col5, col6 = st.columns([2, 1])
     with col5:
         st.subheader("✅ 최적화 태그 10선")
         tag_display = ", ".join([f"#{t[0]}" for t in tags])
         st.success(tag_display)
-        st.caption("※ 태그를 NLU 단위로 분해하여 상품명 및 속성과 중복되지 않는 최적의 조합을 선별했습니다.")
+        st.caption("※ 태그를 NLU 단위로 분해하고 문자열 포함 관계를 분석하여 유입 경로가 겹치지 않는 최적의 조합을 선별했습니다.")
     with col6:
         st.subheader("📊 태그 사용 빈도수")
         tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
