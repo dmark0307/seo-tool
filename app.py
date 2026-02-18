@@ -12,7 +12,6 @@ st.markdown("---")
 class SEOManager:
     def __init__(self, df, user_exclude_list):
         self.df = df
-        # 기본 브랜드 제외 리스트 + 사용자 입력 제외 키워드 통합
         self.exclude_brands = [
             '매일', '서울우유', '서울', '연세', '남양', '건국', '파스퇴르', '일동', '후디스', 
             '소와나무', '빙그레', '셀로몬', '빅원더', '미광스토어', '데어리마켓', '도남상회', 
@@ -20,7 +19,7 @@ class SEOManager:
         ] + user_exclude_list
 
     def split_base_terms(self, text):
-        """복합 명사 분리 및 수치값/브랜드/제외어 제거"""
+        """복합 명사 분리 및 불용어 제거"""
         if pd.isna(text) or text == '-': return []
         text = re.sub(r'[^가-힣a-zA-Z0-9\s]', ' ', str(text))
         raw_words = text.split()
@@ -59,13 +58,12 @@ class SEOManager:
             if any(core in word for core in usage): return 3
             if any(core in word for core in desc): return 4
             return 5
-
         return sorted(word_count_pairs, key=lambda x: get_priority(x))
 
     def run_analysis(self, conversion_input, add_input, total_target_count):
-        conversion_keywords = [w.strip() for w in conversion_input.split() if len(w.strip()) > 0]
-        add_keywords = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
-        fixed_keywords = conversion_keywords + add_keywords
+        conv_keys = [w.strip() for w in conversion_input.split() if len(w.strip()) > 0]
+        add_keys = [w.strip() for w in add_input.split() if len(w.strip()) > 0]
+        fixed_keywords = conv_keys + add_keys
         
         name_terms = []
         for name in self.df['상품명']:
@@ -81,6 +79,7 @@ class SEOManager:
         selected_auto_pairs = auto_candidates[:remain_count]
         readable_auto_pairs = self.reorder_for_readability(selected_auto_pairs)
         
+        # 스펙 분석
         spec_list = []
         for spec in self.df['스펙'].dropna():
             if spec != '-':
@@ -88,55 +87,72 @@ class SEOManager:
                 spec_list.extend([p for p in parts if len(p) > 1 and p not in self.exclude_brands])
         spec_counts = Counter(spec_list).most_common(8)
 
+        # 태그 분석 로직
         tag_raw_list = []
         for tags in self.df['검색인식태그'].dropna():
             if tags != '-':
                 parts = [t.strip() for t in str(tags).split(',')]
                 tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
-        # 태그 빈도수 계산
         tag_freq = Counter(tag_raw_list).most_common(150)
         current_title_words = fixed_keywords + [p[0] for p in readable_auto_pairs]
         
-        # 상품명에 포함된 단어만 제외 (포함 관계 제거)
-        valid_candidates = []
+        # 1차 필터링: 제목 중복 및 숫자 포함 단어 제거
+        candidates = []
         for t, c in tag_freq:
             if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
-                valid_candidates.append((t, c))
+                candidates.append((t, c))
 
+        # [핵심 로직] 조합 확장성 극대화 선별 (Subsumption Logic)
+        # 정보량이 더 많은(긴) 단어를 우선적으로 선별하여 검색 그물을 넓힘
         final_tags = []
         
-        # [수정됨] 중복 필터링 로직: 100% 일치할 때만 중복 처리
-        # '제과'가 있어도 '제과제빵'은 살아남음
-        for t, c in valid_candidates:
+        # 빈도순으로 정렬된 후보군을 다시 '길이'순으로 정렬하여 긴 단어 우선 검토
+        # (단, 빈도가 너무 낮으면 안 되므로 상위 40개 중에서만 선별)
+        top_candidates = candidates[:40]
+        
+        for i, (target_t, target_c) in enumerate(top_candidates):
             if len(final_tags) >= 10: break
             
-            # 이미 선정된 태그 목록에 정확히 같은 단어가 있는지 확인
-            is_exact_duplicate = False
-            for existing_t, _ in final_tags:
-                if t == existing_t:  # 정확히 같을 때만 중복
-                    is_exact_duplicate = True
+            # 현재 단어가 다른 후보 단어에 포함되는지 확인 (예: '제과제빵'은 '제과제빵재료'에 포함됨)
+            # 포함된다면, 더 큰 단어를 나중에 선택하기 위해 현재 단어는 스킵하거나 교체함
+            is_subsumed = False
+            for j, (compare_t, compare_c) in enumerate(top_candidates):
+                if i != j and target_t in compare_t and target_t != compare_t:
+                    # 더 큰 정보량을 가진 단어가 후보군에 존재함
+                    is_subsumed = True
                     break
             
-            if not is_exact_duplicate:
+            if not is_subsumed:
+                # 이미 뽑힌 단어와의 중복성 체크
+                is_duplicate = False
+                for existing_t, _ in final_tags:
+                    if target_t == existing_t:
+                        is_duplicate = True; break
+                
+                if not is_duplicate:
+                    final_tags.append((target_t, target_c))
+
+        # 만약 10개가 안 채워졌다면 빈도순으로 추가 보충
+        selected_set = {t for t, c in final_tags}
+        for t, c in candidates:
+            if len(final_tags) >= 10: break
+            if t not in selected_set:
                 final_tags.append((t, c))
-        
-        # 빈도순 정렬 (이미 되어있으나 확실하게)
-        final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
-        
-        return fixed_keywords, readable_auto_pairs, spec_counts, final_tags
+                selected_set.add(t)
 
-def check_length(text):
-    """상품명 길이 및 바이트 계산 (네이버 기준: 한글 2byte, 영문 1byte)"""
-    char_len = len(text)
+        return fixed_keywords, readable_auto_pairs, spec_counts, sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
+
+def calculate_seo_metrics(text):
+    """글자 수 및 바이트 계산"""
+    char_count = len(text)
     try:
-        byte_len = len(text.encode('euc-kr'))
+        byte_count = len(text.encode('euc-kr'))
     except:
-        byte_len = len(text.encode('utf-8')) # fallback
-    
-    return char_len, byte_len
+        byte_count = len(text.encode('utf-8'))
+    return char_count, byte_count
 
-# 3. 사용자 인터페이스 (GUI)
+# 3. GUI 구성
 st.sidebar.header("📁 Step 1. 데이터 업로드")
 uploaded_file = st.sidebar.file_uploader("분석용 CSV 파일 업로드", type=["csv"])
 
@@ -144,13 +160,7 @@ st.sidebar.header("🎯 Step 2. 전략 키워드 설정")
 conversion_input = st.sidebar.text_input("구매전환 키워드", placeholder="예: 맛있는 속편한")
 add_input = st.sidebar.text_input("추가할 키워드 (고정 배치)", placeholder="예: 국내산 당일발송")
 exclude_input = st.sidebar.text_input("제외할 키워드 (분석 제외)", placeholder="예: 브랜드명")
-
-total_kw_count = st.sidebar.number_input(
-    "상품명 총 키워드 수 설정", 
-    min_value=5, 
-    max_value=25, 
-    value=11
-)
+total_kw_count = st.sidebar.number_input("상품명 목표 키워드 수", min_value=5, max_value=25, value=11)
 
 user_exclude_list = [w.strip() for w in exclude_input.split() if len(w.strip()) > 0]
 
@@ -162,35 +172,31 @@ if uploaded_file:
         df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
 
     manager = SEOManager(df, user_exclude_list)
-    fixed_keys, auto_keys_pairs, specs, tags = manager.run_analysis(conversion_input, add_input, total_kw_count)
+    fixed, auto, specs, tags = manager.run_analysis(conversion_input, add_input, total_kw_count)
 
-    st.success(f"✨ 총 {total_kw_count}개 키워드 타겟팅 분석이 완료되었습니다!")
+    st.success("✨ SEO 최적화 분석이 완료되었습니다!")
 
     # 섹션 1: 상품명
     st.header("🏷️ 1. 전략적 상품명 조합")
     col1, col2 = st.columns([2, 1])
     with col1:
         st.subheader("✅ 완성된 상품명")
-        full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
+        full_title = " ".join(fixed + [p[0] for p in auto])
+        st.code(full_title, language=None)
         
-        # [추가됨] 길이 검증 로직
-        c_len, b_len = check_length(full_title)
-        
-        # 50자 기준 검증 (네이버 권장 50자 이내)
+        c_len, b_len = calculate_seo_metrics(full_title)
         if c_len <= 50:
-            st.code(full_title, language=None)
-            st.markdown(f"🟢 **정상 (50자 이내)**: {c_len}자 / {b_len} Byte")
+            st.markdown(f"🟢 **정상**: {c_len}자 / {b_len} Byte")
         else:
-            st.code(full_title, language=None)
-            st.markdown(f"🔴 **주의 (50자 초과)**: {c_len}자 ({c_len - 50}자 초과) / {b_len} Byte")
-            st.warning("⚠️ 상품명이 너무 깁니다. 키워드 개수를 줄이거나 불필요한 단어를 삭제하세요.")
+            st.markdown(f"🔴 **주의**: {c_len}자 ({c_len-50}자 초과) / {b_len} Byte")
+            st.warning("상품명이 50자를 초과하면 검색 결과에서 생략될 수 있습니다.")
+            
+        st.info("**가독성 전략:** 구매전환 → 제품본질 → 제형 → 용도 → 속성 순 정렬")
 
-        st.info("**가독성 전략:** [구매전환 키워드] + [제품본질] + [제형] + [용도] + [속성] 순으로 자동 정렬")
-        
     with col2:
-        st.subheader("📊 자동 키워드 빈도")
-        auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
-        auto_df.index = auto_df.index + 1
+        st.subheader("📊 키워드 빈도 데이터")
+        auto_df = pd.DataFrame(auto, columns=['단어', '빈도'])
+        auto_df.index += 1
         st.table(auto_df)
 
     st.markdown("---")
@@ -199,26 +205,24 @@ if uploaded_file:
     st.header("⚙️ 2. 필터 노출용 속성값")
     col3, col4 = st.columns([2, 1])
     with col3:
-        for s, c in specs: st.button(f"{s}", key=f"attr_{s}", use_container_width=True)
+        for s, _ in specs: st.button(s, key=f"attr_{s}", use_container_width=True)
     with col4:
-        spec_df = pd.DataFrame(specs, columns=['속성값', '빈도'])
-        spec_df.index = spec_df.index + 1
-        st.table(spec_df)
+        st.table(pd.DataFrame(specs, columns=['속성값', '빈도']).set_index(pd.Index(range(1, len(specs)+1))))
 
     st.markdown("---")
 
-    # 섹션 3: 태그
-    st.header("🔍 3. 확장 검색 태그")
+    # 섹션 3: 태그 (확장성 극대화 업데이트)
+    st.header("🔍 3. 확장 검색 태그 (조합 효율 극대화)")
     col5, col6 = st.columns([2, 1])
     with col5:
         st.subheader("✅ 최적화 태그 10선")
         tag_display = ", ".join([f"#{t[0]}" for t in tags])
         st.success(tag_display)
-        st.caption("※ '제과'가 포함되어 있어도 '제과제빵'은 삭제되지 않습니다 (100% 일치 시에만 중복 처리)")
+        st.caption("※ '제과제빵'과 '제과제빵재료' 중 정보량이 더 많은 확장 단어를 우선 선택하여 노출 기회를 극대화했습니다.")
     with col6:
         st.subheader("📊 태그 사용 빈도수")
         tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
-        tag_df.index = tag_df.index + 1
+        tag_df.index += 1
         st.table(tag_df)
 else:
-    st.info("왼쪽 사이드바에서 파일을 업로드하고 설정을 확인해주세요.")
+    st.info("왼쪽 사이드바에서 파일을 업로드하고 분석 설정을 확인해주세요.")
