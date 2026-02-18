@@ -94,38 +94,47 @@ class SEOManager:
                 parts = [t.strip() for t in str(tags).split(',')]
                 tag_raw_list.extend([t for t in parts if not any(b in t for b in self.exclude_brands)])
         
+        # 태그 빈도수 계산
         tag_freq = Counter(tag_raw_list).most_common(150)
         current_title_words = fixed_keywords + [p[0] for p in readable_auto_pairs]
         
+        # 상품명에 포함된 단어만 제외 (포함 관계 제거)
         valid_candidates = []
         for t, c in tag_freq:
             if not any(char.isdigit() for char in t) and not any(word in t for word in current_title_words):
                 valid_candidates.append((t, c))
 
         final_tags = []
-        used_roots = set()
-        clusters = {'제과': ['제과', '제빵', '베이킹'], '맛': ['맛', '달달', '고소'], '영양': ['영양', '단백질'], '용도': ['자판기', '식자재']}
-
-        for t, c in valid_candidates:
-            matched_root = None
-            for root, keywords in clusters.items():
-                if any(k in t for k in keywords):
-                    matched_root = root; break
-            if matched_root and matched_root not in used_roots:
-                final_tags.append((t, c)); used_roots.add(matched_root)
-
+        
+        # [수정됨] 중복 필터링 로직: 100% 일치할 때만 중복 처리
+        # '제과'가 있어도 '제과제빵'은 살아남음
         for t, c in valid_candidates:
             if len(final_tags) >= 10: break
-            if any(t == existing[0] for existing in final_tags): continue
-            is_redundant = False
-            for ex_t, _ in final_tags:
-                if t in ex_t or ex_t in t:
-                    is_redundant = True; break
-            if not is_redundant: final_tags.append((t, c))
+            
+            # 이미 선정된 태그 목록에 정확히 같은 단어가 있는지 확인
+            is_exact_duplicate = False
+            for existing_t, _ in final_tags:
+                if t == existing_t:  # 정확히 같을 때만 중복
+                    is_exact_duplicate = True
+                    break
+            
+            if not is_exact_duplicate:
+                final_tags.append((t, c))
         
+        # 빈도순 정렬 (이미 되어있으나 확실하게)
         final_tags = sorted(final_tags, key=lambda x: x[1], reverse=True)[:10]
         
         return fixed_keywords, readable_auto_pairs, spec_counts, final_tags
+
+def check_length(text):
+    """상품명 길이 및 바이트 계산 (네이버 기준: 한글 2byte, 영문 1byte)"""
+    char_len = len(text)
+    try:
+        byte_len = len(text.encode('euc-kr'))
+    except:
+        byte_len = len(text.encode('utf-8')) # fallback
+    
+    return char_len, byte_len
 
 # 3. 사용자 인터페이스 (GUI)
 st.sidebar.header("📁 Step 1. 데이터 업로드")
@@ -163,8 +172,21 @@ if uploaded_file:
     with col1:
         st.subheader("✅ 완성된 상품명")
         full_title = " ".join(fixed_keys + [p[0] for p in auto_keys_pairs])
-        st.code(full_title, language=None)
+        
+        # [추가됨] 길이 검증 로직
+        c_len, b_len = check_length(full_title)
+        
+        # 50자 기준 검증 (네이버 권장 50자 이내)
+        if c_len <= 50:
+            st.code(full_title, language=None)
+            st.markdown(f"🟢 **정상 (50자 이내)**: {c_len}자 / {b_len} Byte")
+        else:
+            st.code(full_title, language=None)
+            st.markdown(f"🔴 **주의 (50자 초과)**: {c_len}자 ({c_len - 50}자 초과) / {b_len} Byte")
+            st.warning("⚠️ 상품명이 너무 깁니다. 키워드 개수를 줄이거나 불필요한 단어를 삭제하세요.")
+
         st.info("**가독성 전략:** [구매전환 키워드] + [제품본질] + [제형] + [용도] + [속성] 순으로 자동 정렬")
+        
     with col2:
         st.subheader("📊 자동 키워드 빈도")
         auto_df = pd.DataFrame(auto_keys_pairs, columns=['단어', '빈도(회)'])
@@ -186,15 +208,15 @@ if uploaded_file:
     st.markdown("---")
 
     # 섹션 3: 태그
-    st.header("🔍 3. 확장 검색 태그 (중복 배제 및 조합 확장)")
+    st.header("🔍 3. 확장 검색 태그")
     col5, col6 = st.columns([2, 1])
     with col5:
         st.subheader("✅ 최적화 태그 10선")
         tag_display = ", ".join([f"#{t[0]}" for t in tags])
-        st.warning(tag_display)
+        st.success(tag_display)
+        st.caption("※ '제과'가 포함되어 있어도 '제과제빵'은 삭제되지 않습니다 (100% 일치 시에만 중복 처리)")
     with col6:
-        # ★ [수정 완료] 명칭 변경: 인식 횟수 -> 사용 빈도수
-        st.subheader("📊 태그 인식 데이터")
+        st.subheader("📊 태그 사용 빈도수")
         tag_df = pd.DataFrame(tags, columns=['태그명', '사용 빈도수'])
         tag_df.index = tag_df.index + 1
         st.table(tag_df)
